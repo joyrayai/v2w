@@ -30,7 +30,7 @@ import githubMark from "./assets/github-mark.svg";
 import logoSilicon from "./assets/logo-silicon.png";
 import "./styles.css";
 
-const API = window.location.port === "5173" ? "http://localhost:5174" : "";
+const API = window.location.hostname === "localhost" && window.location.port !== "5174" ? "http://localhost:5174" : "";
 const AUTH_TOKEN_KEY = "vtw-auth-token";
 
 function authHeaders() {
@@ -1993,6 +1993,87 @@ function AuthScreen({ onAuthed }) {
   );
 }
 
+function SetupScreen({ status, onAuthed, onRefresh }) {
+  const [username, setUsername] = useState("admin");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const tools = [
+    ["ffmpeg", status?.tools?.ffmpegOk],
+    ["ffprobe", status?.tools?.ffprobeOk],
+    ["yt-dlp", status?.tools?.ytDlpOk],
+    ["BaiduPCS-Go", status?.tools?.pcsOk],
+    ["Chrome/Chromium", status?.tools?.chromeOk]
+  ];
+
+  async function submit(event) {
+    event.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/api/setup/admin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "初始化失败");
+      localStorage.setItem(AUTH_TOKEN_KEY, data.token);
+      onAuthed(data.user);
+    } catch (err) {
+      setError(err.message || "初始化失败，请稍后重试。");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="bg" />
+      <main className="setupShell">
+        <section className="setupCard panel">
+          <div className="setupIntro">
+            <span className="brandMark authMark"><Sparkles size={18} /></span>
+            <h1>初始化 V2W</h1>
+            <p>创建第一个管理员账号后即可进入工作台。系统工具可以稍后补齐，直链转写不依赖网盘工具。</p>
+          </div>
+          <div className="setupGrid">
+            <div className="setupBlock">
+              <div className="setupBlockHead">
+                <h2>环境检查</h2>
+                <button className="btn" onClick={onRefresh}><RefreshCw size={15} />刷新</button>
+              </div>
+              <div className="setupChecks">
+                {tools.map(([label, ok]) => (
+                  <div className={`setupCheck ${ok ? "ok" : "warn"}`} key={label}>
+                    <span>{ok ? "已找到" : "未找到"}</span>
+                    <strong>{label}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <form className="setupBlock" onSubmit={submit}>
+              <div className="setupBlockHead">
+                <h2>管理员账号</h2>
+              </div>
+              <label className="field">账号
+                <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="admin" autoComplete="username" />
+              </label>
+              <label className="field">密码
+                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="至少 6 位" autoComplete="new-password" />
+              </label>
+              {error && <div className="submitNotice err slim">{error}</div>}
+              <button className="primary authSubmit" disabled={loading || !username || password.length < 6}>
+                <KeyRound size={17} />{loading ? "初始化中" : "创建管理员"}
+              </button>
+            </form>
+          </div>
+        </section>
+      </main>
+    </>
+  );
+}
+
 function App({ user, onLogout }) {
   const [tab, setTab] = useState("direct");
   const [jobs, setJobs] = useState([]);
@@ -2158,11 +2239,22 @@ function App({ user, onLogout }) {
 
 function Root() {
   const [user, setUser] = useState(null);
+  const [setupStatus, setSetupStatus] = useState(null);
   const [checking, setChecking] = useState(Boolean(localStorage.getItem(AUTH_TOKEN_KEY)));
+
+  const refreshSetupStatus = useCallback(async () => {
+    const res = await fetch(`${API}/api/setup/status`);
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) setSetupStatus(data);
+  }, []);
 
   useEffect(() => {
     const token = localStorage.getItem(AUTH_TOKEN_KEY);
-    if (!token) return;
+    refreshSetupStatus().catch(() => {});
+    if (!token) {
+      setChecking(false);
+      return;
+    }
     apiFetch("/api/auth/me")
       .then(async (res) => {
         const data = await res.json();
@@ -2174,7 +2266,7 @@ function Root() {
         setUser(null);
       })
       .finally(() => setChecking(false));
-  }, []);
+  }, [refreshSetupStatus]);
 
   function logout() {
     localStorage.removeItem(AUTH_TOKEN_KEY);
@@ -2188,6 +2280,10 @@ function Root() {
         <main className="authShell"><section className="authCard panel">正在检查登录状态...</section></main>
       </>
     );
+  }
+
+  if (!user && setupStatus?.needsAdmin) {
+    return <SetupScreen status={setupStatus} onAuthed={setUser} onRefresh={refreshSetupStatus} />;
   }
 
   return user ? <App user={user} onLogout={logout} /> : <AuthScreen onAuthed={setUser} />;

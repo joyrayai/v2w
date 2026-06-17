@@ -7,6 +7,7 @@ import { safeName } from "./utils.js";
 import { detectNetdiskProvider, unsupportedNetdiskMessage } from "./services/netdisk.js";
 import { publicUsageRecord, usageDateRange } from "./services/usage.js";
 import { testLlmConnection } from "./services/ai.js";
+import { DEFAULT_EXTRA_DOC_TEMPLATES } from "./defaults/templates.js";
 
 export function registerRoutes(app, ctx) {
   const {
@@ -127,6 +128,52 @@ export function registerRoutes(app, ctx) {
     };
   }
 
+  async function commandExists(command) {
+    return runCommand(SHELL, ["-lc", `command -v ${command}`]).then(() => true).catch(() => false);
+  }
+
+  app.get("/api/setup/status", async (_req, res) => {
+    const [ffmpegOk, ffprobeOk, pcsOk, ytDlpOk, chromeOk] = await Promise.all([
+      commandExists("ffmpeg"),
+      commandExists("ffprobe"),
+      commandExists("BaiduPCS-Go"),
+      commandExists("yt-dlp"),
+      Promise.resolve(Boolean(process.env.CHROME_PATH || process.env.CHROMIUM_PATH))
+        .then((configured) => configured || commandExists("google-chrome").catch(() => false))
+        .then((ok) => ok || commandExists("chromium").catch(() => false))
+        .then((ok) => ok || commandExists("chromium-browser").catch(() => false))
+        .then((ok) => ok || commandExists("open").catch(() => false))
+    ]);
+    const adminReady = users.some((user) => isAdmin(user));
+    res.json({
+      ok: true,
+      needsAdmin: !users.length,
+      adminReady,
+      users: users.length,
+      tools: { ffmpegOk, ffprobeOk, pcsOk, ytDlpOk, chromeOk }
+    });
+  });
+
+  app.post("/api/setup/admin", (req, res) => {
+    if (users.length) return res.status(409).json({ error: "系统已存在账号，不能再次初始化管理员。" });
+    const username = normalizeUsername(req.body?.username || "admin");
+    const password = String(req.body?.password || "");
+    if (!validateUsername(username)) {
+      return res.status(400).json({ error: "账号需为 3-40 位，可包含字母、数字、下划线、邮箱符号、点或横线。" });
+    }
+    if (password.length < 6) return res.status(400).json({ error: "密码至少 6 位。" });
+    const user = {
+      id: nanoid(12),
+      username,
+      passwordHash: hashPassword(password),
+      provider: "password",
+      createdAt: new Date().toISOString()
+    };
+    users.push(user);
+    store.saveUser(user);
+    res.json({ token: signToken(user), user: publicUser(user) });
+  });
+
   app.post("/api/auth/register", (req, res) => {
     const username = normalizeUsername(req.body?.username);
     const password = String(req.body?.password || "");
@@ -230,37 +277,6 @@ export function registerRoutes(app, ctx) {
       updatedAt: template.updatedAt
     };
   }
-
-  const DEFAULT_EXTRA_DOC_TEMPLATES = [
-    {
-      title: "提炼版",
-      prompt: [
-        "请基于下方逐字稿生成一份结构清晰的提炼版文档。",
-        "",
-        "要求：",
-        "1. 保留原文中的核心事实、观点、结论和重要表述，不要编造逐字稿中不存在的信息。",
-        "2. 去除口头语、重复表达、寒暄和明显无意义停顿。",
-        "3. 按“标题 / 核心摘要 / 重点内容 / 结论或行动建议”的结构输出。",
-        "4. 重点内容请使用一级、二级标题组织，必要时使用项目符号。",
-        "5. 如果原文涉及专业术语、人名、药品名、疾病名或数据，请尽量保持准确。",
-        "6. 输出为可直接放入 Word 的正文，不要解释你的处理过程。"
-      ].join("\n")
-    },
-    {
-      title: "思维导图",
-      prompt: [
-        "请基于下方逐字稿生成一份适合制作思维导图的层级大纲。",
-        "",
-        "要求：",
-        "1. 用 Markdown 层级标题和缩进项目符号表达，不要输出表格。",
-        "2. 第一层为主题，第二层为主要分支，第三层为关键要点，必要时增加第四层细节。",
-        "3. 每个节点尽量短句化，便于直接复制到思维导图工具。",
-        "4. 保留原文中的核心概念、逻辑关系、结论、建议和重要细节。",
-        "5. 不要加入逐字稿中没有的信息，不确定内容不要扩展。",
-        "6. 输出为纯正文内容，不要解释你的处理过程。"
-      ].join("\n")
-    }
-  ];
 
   function listTemplatesWithDefaults(userId) {
     const templates = store.listTemplates(userId);

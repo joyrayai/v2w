@@ -131,13 +131,24 @@ h1, h2, h3, p { margin: 0; }
   place-items: center;
   padding: 28px 18px;
 }
+.setupShell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px 18px;
+}
 .authCard {
   width: min(440px, 100%);
   margin: 0;
   text-align: left;
 }
+.setupCard {
+  width: min(900px, 100%);
+  margin: 0;
+}
 .authMark { margin-bottom: 16px; }
-.authCard h1 {
+.authCard h1,
+.setupIntro h1 {
   font-size: 34px;
   line-height: 1.12;
   letter-spacing: -.015em;
@@ -147,7 +158,8 @@ h1, h2, h3, p { margin: 0; }
   background-clip: text;
   -webkit-text-fill-color: transparent;
 }
-.authCard p {
+.authCard p,
+.setupIntro p {
   margin-top: 10px;
   color: var(--ink-2);
   font-size: 14px;
@@ -161,6 +173,58 @@ h1, h2, h3, p { margin: 0; }
   justify-content: center;
   margin-top: 2px;
 }
+.setupIntro {
+  max-width: 640px;
+  margin-bottom: 24px;
+}
+.setupGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, .8fr);
+  gap: 18px;
+}
+.setupBlock {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid rgba(150,170,210,.24);
+  border-radius: var(--radius-md);
+  background: rgba(255,255,255,.66);
+}
+.setupBlockHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.setupBlockHead h2 {
+  font-size: 17px;
+  font-weight: 650;
+}
+.setupChecks {
+  display: grid;
+  gap: 10px;
+}
+.setupCheck {
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(150,170,210,.22);
+  background: rgba(255,255,255,.72);
+}
+.setupCheck strong {
+  font-size: 14px;
+}
+.setupCheck span {
+  min-width: 58px;
+  font-size: 12px;
+  font-weight: 650;
+}
+.setupCheck.ok span { color: var(--green); }
+.setupCheck.warn span { color: var(--amber); }
 
 .shell {
   max-width: 1180px;
@@ -1566,6 +1630,8 @@ textarea { resize: vertical; min-height: 92px; line-height: 1.5; }
 }
 @media (max-width: 760px) {
   .shell { padding: 32px 16px 70px; }
+  .setupGrid { grid-template-columns: 1fr; }
+  .setupBlock { padding: 14px; }
   .topbar { padding: 0 156px 0 12px; }
   .topbar .sub, .topbar .sep { display: none; }
   .accountBar { right: 12px; gap: 6px; }

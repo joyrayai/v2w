@@ -6,6 +6,10 @@ V2W is a self-hosted video-to-Word workspace. It can batch transcribe public vid
 
 The project is designed for small teams that want to run the full workflow on their own server.
 
+## Screenshot
+
+![V2W web app](docs/screenshots/workspace.png)
+
 ## Features
 
 - Batch task submission from multiple links.
@@ -57,6 +61,8 @@ cd v2w
 npm run setup
 npm run dev
 ```
+
+Open the web app and create the first administrator account when prompted. After initialization, log in and configure your model provider before submitting tasks.
 
 Default local URLs:
 
