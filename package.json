@@ -1,0 +1,45 @@
+{
+  "name": "baidu-video-to-word",
+  "version": "0.1.2",
+  "description": "Batch transcribe direct, page and cloud-drive videos into Word documents with ASR and OpenAI-compatible LLMs.",
+  "private": false,
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://github.com/joyrayai/v2w#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joyrayai/v2w.git"
+  },
+  "bugs": {
+    "url": "https://github.com/joyrayai/v2w/issues"
+  },
+  "scripts": {
+    "setup": "bash scripts/bootstrap.sh",
+    "doctor": "bash scripts/bootstrap.sh --check-only",
+    "dev": "concurrently \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "node server/src/index.js",
+    "dev:web": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "start": "node server/src/index.js",
+    "setup:netdisk": "bash scripts/setup-netdisk-env.sh"
+  },
+  "dependencies": {
+    "ali-oss": "^6.23.0",
+    "archiver": "^8.0.0",
+    "better-sqlite3": "^11.10.0",
+    "cors": "^2.8.5",
+    "docx": "^9.5.1",
+    "express": "^5.1.0",
+    "lucide-react": "^0.468.0",
+    "mime-types": "^2.1.35",
+    "nanoid": "^5.1.5",
+    "playwright-core": "^1.60.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.5.2",
+    "concurrently": "^9.2.0",
+    "vite": "^6.3.5"
+  }
+}
