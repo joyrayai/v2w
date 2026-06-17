@@ -6,7 +6,7 @@ V2W is a self-hosted video-to-Word workspace. It can batch transcribe public vid
 
 The project is designed for small teams that want to run the full workflow on their own server.
 
-Current version: `0.1.7`
+Current version: `0.1.8`
 
 ## Screenshot
 
@@ -183,6 +183,12 @@ Available tools:
 | `v2w.config.get` | Read the current account model configuration with secrets redacted |
 | `v2w.config.save` | Save model and optional OSS configuration for the account |
 | `v2w.config.test` | Test saved or supplied OpenAI-compatible model configuration |
+| `v2w.usage.pricing` | Read the local ASR and AI pricing table used for estimates |
+| `v2w.usage.summary` | Read current-account usage summary |
+| `v2w.usage.records` | List current-account usage records |
+| `v2w.admin.users` | Admin only: list users with job counts and usage summary |
+| `v2w.admin.usage.summary` | Admin only: read global usage summary |
+| `v2w.admin.usage.records` | Admin only: list global usage records |
 | `v2w.netdisk.status` | Read Baidu or Quark authorization status |
 | `v2w.netdisk.login` | Authorize Baidu or Quark with copied browser cookies; Baidu also supports BDUSS |
 | `v2w.baidu_qr.start` | Start Baidu Netdisk QR authorization |
@@ -245,6 +251,13 @@ Template workflow:
 - Call `v2w.templates.list` to ensure the built-in `提炼版` and `思维导图` templates exist for the account.
 - Call `v2w.templates.create` or `v2w.templates.update` when an agent needs to save reusable prompts for extra Word files.
 - Pass selected template titles and prompts as `extraPrompts` when calling `v2w.jobs.submit`.
+
+Usage and admin workflow:
+
+- Call `v2w.usage.summary` after job completion to report ASR seconds, AI tokens, and estimated cost for the current account.
+- Call `v2w.usage.records` when an agent needs itemized records for a report.
+- Call `v2w.usage.pricing` to explain how local cost estimates are calculated.
+- Admin accounts can call `v2w.admin.users`, `v2w.admin.usage.summary`, and `v2w.admin.usage.records` for organization-level reporting.
 
 Manual netdisk authorization:
 

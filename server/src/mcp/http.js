@@ -1,13 +1,14 @@
 import { nanoid } from "nanoid";
 import { hashPassword, normalizeUsername, signToken, validateUsername, verifyPassword, verifyToken } from "../auth.js";
-import { APP_CONFIG, GIB, SHELL, defaultPrompt } from "../config.js";
+import { APP_CONFIG, GIB, SHELL, USAGE_PRICING, defaultPrompt } from "../config.js";
 import { testLlmConnection } from "../services/ai.js";
 import { detectNetdiskProvider, unsupportedNetdiskMessage } from "../services/netdisk.js";
 import { publicUserSettings, normalizeUserSettings, settingsFromUserConfig } from "../services/settings.js";
+import { publicUsageRecord, usageDateRange } from "../services/usage.js";
 import { DEFAULT_EXTRA_DOC_TEMPLATES } from "../defaults/templates.js";
 
 const MCP_PROTOCOL_VERSION = "2024-11-05";
-const SERVICE_VERSION = "0.1.7";
+const SERVICE_VERSION = "0.1.8";
 
 function jsonRpcResult(id, result) {
   return { jsonrpc: "2.0", id, result };
@@ -37,6 +38,46 @@ function publicUser(user) {
     isAdmin: normalizeUsername(user.username) === "admin",
     provider: user.provider || "password",
     createdAt: user.createdAt
+  };
+}
+
+function isAdmin(user) {
+  return normalizeUsername(user?.username) === "admin";
+}
+
+function requireAdminUser(user) {
+  if (!isAdmin(user)) throw new Error("需要管理员权限。");
+}
+
+function boundedPage(value, fallback = 1) {
+  return Math.max(1, Number.parseInt(String(value || fallback), 10) || fallback);
+}
+
+function boundedPageSize(value, fallback = 50, max = 100) {
+  return Math.max(1, Math.min(max, Number.parseInt(String(value || fallback), 10) || fallback));
+}
+
+function usageRange(args = {}) {
+  const range = String(args.range || "month");
+  return usageDateRange(range === "today" ? "today" : "month");
+}
+
+function publicAdminUsageRecord(record) {
+  return {
+    ...publicUsageRecord(record),
+    userId: record.userId,
+    username: record.username || ""
+  };
+}
+
+function jobCountsForUser(jobs, userId) {
+  const userJobs = [...jobs.values()].filter((job) => job.userId === userId);
+  return {
+    total: userJobs.length,
+    queued: userJobs.filter((job) => job.status === "queued").length,
+    running: userJobs.filter((job) => job.status === "running").length,
+    done: userJobs.filter((job) => job.status === "done").length,
+    error: userJobs.filter((job) => job.status === "error").length
   };
 }
 
@@ -292,6 +333,57 @@ export function registerMcpRoutes(app, ctx) {
       })
     },
     {
+      name: "v2w.usage.pricing",
+      description: "Read the local ASR and AI usage pricing table used for cost estimates.",
+      inputSchema: schema({
+        authToken: { type: "string" }
+      })
+    },
+    {
+      name: "v2w.usage.summary",
+      description: "Read usage summary for the current account.",
+      inputSchema: schema({
+        authToken: { type: "string" },
+        range: { type: "string", enum: ["today", "month"] }
+      })
+    },
+    {
+      name: "v2w.usage.records",
+      description: "List usage records for the current account.",
+      inputSchema: schema({
+        authToken: { type: "string" },
+        range: { type: "string", enum: ["today", "month"] },
+        page: { type: "number" },
+        pageSize: { type: "number" }
+      })
+    },
+    {
+      name: "v2w.admin.users",
+      description: "Admin only: list users with job counts and usage summary.",
+      inputSchema: schema({
+        authToken: { type: "string" },
+        range: { type: "string", enum: ["today", "month"] }
+      })
+    },
+    {
+      name: "v2w.admin.usage.summary",
+      description: "Admin only: read global usage summary.",
+      inputSchema: schema({
+        authToken: { type: "string" },
+        range: { type: "string", enum: ["today", "month"] }
+      })
+    },
+    {
+      name: "v2w.admin.usage.records",
+      description: "Admin only: list global usage records.",
+      inputSchema: schema({
+        authToken: { type: "string" },
+        range: { type: "string", enum: ["today", "month"] },
+        page: { type: "number" },
+        pageSize: { type: "number" }
+      })
+    },
+    {
       name: "v2w.netdisk.status",
       description: "Read Baidu or Quark netdisk authorization status for the current V2W account.",
       inputSchema: schema({
@@ -528,6 +620,75 @@ export function registerMcpRoutes(app, ctx) {
       if (!config) throw new Error("请先保存当前账号的模型配置。");
       const result = await testLlmConnection(settingsFromUserConfig(config, {}, req));
       return { ok: true, model: result.model, config: publicUserSettings(config) };
+    }
+
+    if (name === "v2w.usage.pricing") {
+      return { pricing: USAGE_PRICING };
+    }
+
+    if (name === "v2w.usage.summary") {
+      const dateRange = usageRange(args);
+      const summary = store.usageSummary(user.id, dateRange);
+      return { range: dateRange.range, start: dateRange.start, end: dateRange.end, summary };
+    }
+
+    if (name === "v2w.usage.records") {
+      const dateRange = usageRange(args);
+      const page = boundedPage(args.page);
+      const pageSize = boundedPageSize(args.pageSize, 50, 100);
+      const records = store.usageRecords(user.id, {
+        ...dateRange,
+        limit: pageSize,
+        offset: (page - 1) * pageSize
+      });
+      return { range: dateRange.range, page, pageSize, records: records.map(publicUsageRecord) };
+    }
+
+    if (name === "v2w.admin.users") {
+      requireAdminUser(user);
+      const dateRange = usageRange(args);
+      const usageByUser = new Map((store.adminUsageSummary(dateRange).byUser || []).map((item) => [item.id, item]));
+      return {
+        range: dateRange.range,
+        start: dateRange.start,
+        end: dateRange.end,
+        users: users.map((item) => ({
+          id: item.id,
+          username: item.username,
+          provider: item.provider || "password",
+          isAdmin: isAdmin(item),
+          createdAt: item.createdAt,
+          jobs: jobCountsForUser(jobs, item.id),
+          usage: usageByUser.get(item.id) || {
+            records: 0,
+            asrSeconds: 0,
+            llmTokens: 0,
+            asrCost: 0,
+            llmCost: 0,
+            estimatedCost: 0
+          }
+        })).sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
+      };
+    }
+
+    if (name === "v2w.admin.usage.summary") {
+      requireAdminUser(user);
+      const dateRange = usageRange(args);
+      const summary = store.adminUsageSummary(dateRange);
+      return { range: dateRange.range, start: dateRange.start, end: dateRange.end, summary };
+    }
+
+    if (name === "v2w.admin.usage.records") {
+      requireAdminUser(user);
+      const dateRange = usageRange(args);
+      const page = boundedPage(args.page);
+      const pageSize = boundedPageSize(args.pageSize, 100, 200);
+      const records = store.adminUsageRecords({
+        ...dateRange,
+        limit: pageSize,
+        offset: (page - 1) * pageSize
+      });
+      return { range: dateRange.range, page, pageSize, records: records.map(publicAdminUsageRecord) };
     }
 
     if (name === "v2w.netdisk.status") {
