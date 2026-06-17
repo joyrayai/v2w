@@ -1,12 +1,13 @@
 import { nanoid } from "nanoid";
-import { normalizeUsername, signToken, verifyPassword, verifyToken } from "../auth.js";
-import { APP_CONFIG, GIB, defaultPrompt } from "../config.js";
+import { hashPassword, normalizeUsername, signToken, validateUsername, verifyPassword, verifyToken } from "../auth.js";
+import { APP_CONFIG, GIB, SHELL, defaultPrompt } from "../config.js";
+import { testLlmConnection } from "../services/ai.js";
 import { detectNetdiskProvider, unsupportedNetdiskMessage } from "../services/netdisk.js";
 import { publicUserSettings, normalizeUserSettings, settingsFromUserConfig } from "../services/settings.js";
 import { DEFAULT_EXTRA_DOC_TEMPLATES } from "../defaults/templates.js";
 
 const MCP_PROTOCOL_VERSION = "2024-11-05";
-const SERVICE_VERSION = "0.1.4";
+const SERVICE_VERSION = "0.1.5";
 
 function jsonRpcResult(id, result) {
   return { jsonrpc: "2.0", id, result };
@@ -148,6 +149,23 @@ function publicJobWithDownloads(req, publicJob, job, publicBaseUrl = "") {
   };
 }
 
+function userFromCredentials(args, users) {
+  const username = normalizeUsername(args.username);
+  const password = String(args.password || "");
+  if (!validateUsername(username)) {
+    throw new Error("账号需为 3-40 位，可包含字母、数字、下划线、邮箱符号、点或横线。");
+  }
+  if (password.length < 6) throw new Error("密码至少 6 位。");
+  if (users.some((user) => user.username === username)) throw new Error("账号已存在。");
+  return {
+    id: nanoid(12),
+    username,
+    passwordHash: hashPassword(password),
+    provider: "password",
+    createdAt: new Date().toISOString()
+  };
+}
+
 export function registerMcpRoutes(app, ctx) {
   const {
     baiduQrLogin,
@@ -160,6 +178,7 @@ export function registerMcpRoutes(app, ctx) {
     removeJobFiles,
     retryJob,
     retryJobExtras,
+    runCommand,
     runtimeStats,
     setMaxConcurrency,
     store,
@@ -168,7 +187,54 @@ export function registerMcpRoutes(app, ctx) {
     users
   } = ctx;
 
+  async function commandExists(command) {
+    if (!runCommand) return false;
+    return runCommand(SHELL, ["-lc", `command -v ${command}`]).then(() => true).catch(() => false);
+  }
+
+  async function setupStatus() {
+    const [ffmpegOk, ffprobeOk, pcsOk, ytDlpOk, chromeOk] = await Promise.all([
+      commandExists("ffmpeg"),
+      commandExists("ffprobe"),
+      commandExists("BaiduPCS-Go"),
+      commandExists("yt-dlp"),
+      Promise.resolve(Boolean(process.env.CHROME_PATH || process.env.CHROMIUM_PATH))
+        .then((configured) => configured || commandExists("google-chrome").catch(() => false))
+        .then((ok) => ok || commandExists("chromium").catch(() => false))
+        .then((ok) => ok || commandExists("chromium-browser").catch(() => false))
+        .then((ok) => ok || commandExists("open").catch(() => false))
+    ]);
+    return {
+      ok: true,
+      needsAdmin: !users.length,
+      adminReady: users.some((user) => normalizeUsername(user.username) === "admin"),
+      users: users.length,
+      tools: { ffmpegOk, ffprobeOk, pcsOk, ytDlpOk, chromeOk }
+    };
+  }
+
   const tools = [
+    {
+      name: "v2w.setup.status",
+      description: "Check whether the service is initialized and whether local runtime tools are available.",
+      inputSchema: schema()
+    },
+    {
+      name: "v2w.setup.create_admin",
+      description: "Create the first administrator account. Only works before any account exists.",
+      inputSchema: schema({
+        username: { type: "string", description: "Admin username. Defaults to admin if omitted." },
+        password: { type: "string", description: "Admin password, at least 6 characters." }
+      }, ["password"])
+    },
+    {
+      name: "v2w.account.register",
+      description: "Create a password account and return an authToken for that account.",
+      inputSchema: schema({
+        username: { type: "string" },
+        password: { type: "string" }
+      }, ["username", "password"])
+    },
     {
       name: "v2w.service_info",
       description: "Read V2W service status, runtime limits, queue status and tool availability.",
@@ -196,6 +262,14 @@ export function registerMcpRoutes(app, ctx) {
         authToken: { type: "string" },
         config: { type: "object", description: "Same shape as the web app model configuration payload." }
       }, ["config"])
+    },
+    {
+      name: "v2w.config.test",
+      description: "Test the current account model configuration or a supplied configuration without saving secrets.",
+      inputSchema: schema({
+        authToken: { type: "string" },
+        config: { type: "object", description: "Optional user configuration shape. If omitted, saved account config is tested." }
+      })
     },
     {
       name: "v2w.netdisk.status",
@@ -314,6 +388,25 @@ export function registerMcpRoutes(app, ctx) {
   ];
 
   async function callTool(req, name, args = {}) {
+    if (name === "v2w.setup.status") {
+      return setupStatus();
+    }
+
+    if (name === "v2w.setup.create_admin") {
+      if (users.length) throw new Error("系统已存在账号，不能再次初始化管理员。");
+      const user = userFromCredentials({ ...args, username: args.username || "admin" }, users);
+      users.push(user);
+      store.saveUser(user);
+      return { authToken: signToken(user), user: publicUser(user), setup: await setupStatus() };
+    }
+
+    if (name === "v2w.account.register") {
+      const user = userFromCredentials(args, users);
+      users.push(user);
+      store.saveUser(user);
+      return { authToken: signToken(user), user: publicUser(user) };
+    }
+
     if (name === "v2w.service_info") {
       return {
         name: "V2W",
@@ -346,6 +439,13 @@ export function registerMcpRoutes(app, ctx) {
       config.updatedAt = new Date().toISOString();
       store.saveUserSettings(user.id, config);
       return { ok: true, user: publicUser(user), config: publicUserSettings(config) };
+    }
+
+    if (name === "v2w.config.test") {
+      const config = args.config ? normalizeUserSettings(args.config) : store.getUserSettings(user.id);
+      if (!config) throw new Error("请先保存当前账号的模型配置。");
+      const result = await testLlmConnection(settingsFromUserConfig(config, {}, req));
+      return { ok: true, model: result.model, config: publicUserSettings(config) };
     }
 
     if (name === "v2w.netdisk.status") {

@@ -1377,6 +1377,7 @@ registerMcpRoutes(app, {
         pumpQueue();
       });
   },
+  runCommand,
   runtimeStats,
   setMaxConcurrency(value) {
     maxConcurrency = value;

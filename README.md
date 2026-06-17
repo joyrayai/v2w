@@ -6,7 +6,7 @@ V2W is a self-hosted video-to-Word workspace. It can batch transcribe public vid
 
 The project is designed for small teams that want to run the full workflow on their own server.
 
-Current version: `0.1.4`
+Current version: `0.1.5`
 
 ## Screenshot
 
@@ -175,10 +175,14 @@ Available tools:
 
 | Tool | Description |
 | --- | --- |
+| `v2w.setup.status` | Check initialization state and local tool availability |
+| `v2w.setup.create_admin` | Create the first administrator account before any account exists |
+| `v2w.account.register` | Create a password account and return an `authToken` |
 | `v2w.service_info` | Read service status, runtime limits and queue status |
 | `v2w.login` | Log in with a V2W account and return an `authToken` |
 | `v2w.config.get` | Read the current account model configuration with secrets redacted |
 | `v2w.config.save` | Save model and optional OSS configuration for the account |
+| `v2w.config.test` | Test saved or supplied OpenAI-compatible model configuration |
 | `v2w.netdisk.status` | Read Baidu or Quark authorization status |
 | `v2w.baidu_qr.start` | Start Baidu Netdisk QR authorization |
 | `v2w.baidu_qr.status` | Poll Baidu Netdisk QR authorization status |
@@ -193,9 +197,11 @@ Available tools:
 
 Authentication flow:
 
-1. Call `v2w.login` with `username` and `password`.
-2. Pass the returned `authToken` in later tool arguments.
-3. Alternatively, pass the token as `Authorization: Bearer <token>`.
+1. Call `v2w.setup.status` after deployment.
+2. If `needsAdmin` is `true`, call `v2w.setup.create_admin`.
+3. Otherwise call `v2w.login` with `username` and `password`, or create a user with `v2w.account.register`.
+4. Pass the returned `authToken` in later tool arguments.
+5. Alternatively, pass the token as `Authorization: Bearer <token>`.
 
 Example JSON-RPC call:
 
@@ -220,10 +226,11 @@ Task workflow over MCP:
 
 1. Call `v2w.login`.
 2. Call `v2w.config.get`; if no config exists, call `v2w.config.save`.
-3. For Baidu Netdisk links, call `v2w.netdisk.status`; if needed, use `v2w.baidu_qr.start` and poll `v2w.baidu_qr.status`.
-4. Call `v2w.jobs.submit` with `links` and optional `extraPrompts`.
-5. Poll `v2w.jobs.list` or `v2w.jobs.get`.
-6. Call `v2w.jobs.downloads` after completion.
+3. Call `v2w.config.test` to verify the AI processing model before submitting work.
+4. For Baidu Netdisk links, call `v2w.netdisk.status`; if needed, use `v2w.baidu_qr.start` and poll `v2w.baidu_qr.status`.
+5. Call `v2w.jobs.submit` with `links` and optional `extraPrompts`.
+6. Poll `v2w.jobs.list` or `v2w.jobs.get`.
+7. Call `v2w.jobs.downloads` after completion.
 
 `v2w.jobs.submit` always uses the model configuration saved on the V2W account. Agents may pass runtime-only options such as `concurrency`, `directUrlMode`, or `publicBaseUrl`, but should not pass model secrets in job calls.
 
