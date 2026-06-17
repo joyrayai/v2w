@@ -1,10 +1,10 @@
-# V2W
+# V2W - Video to Word
 
 [GitHub](https://github.com/joyrayai/v2w) · [Issues](https://github.com/joyrayai/v2w/issues)
 
-V2W is a self-hosted video-to-Word workspace. It can batch transcribe public video links, video page links, Baidu Netdisk shares, and Quark Netdisk shares into `.docx` files. It also supports generating additional Word documents from custom prompts, such as outlines, Q&A notes, summaries, or rewritten drafts.
+V2W is a self-hosted workspace for turning videos into Word documents. It supports batch transcription from public media URLs, video pages, Baidu Netdisk shares, and Quark Netdisk shares, then generates `.docx` outputs for transcripts and prompt-based documents such as outlines, Q&A notes, summaries, mind maps, or rewritten drafts.
 
-The project is designed for small teams that want to run the full workflow on their own server.
+The project is designed for small teams that need repeatable video-to-document workflows on their own server, with account-based model settings, reusable prompt templates, usage tracking, retryable jobs, and a native MCP endpoint for agent integrations such as OpenClaw.
 
 Current version: `0.1.9`
 
@@ -14,23 +14,22 @@ Current version: `0.1.9`
 
 ## Features
 
-- Batch task submission from multiple links.
-- Public HTTP/HTTPS audio and video link transcription.
-- Bilibili page link parsing.
-- Generic video page download through `yt-dlp`.
+- Batch submission from multiple links.
+- Public HTTP/HTTPS media transcription.
+- Bilibili and generic video-page parsing through `yt-dlp`.
 - Baidu Netdisk share processing through `BaiduPCS-Go`.
-- Baidu Netdisk QR-code login for easier account authorization.
+- Baidu Netdisk QR-code login and manual credential authorization.
 - Quark Netdisk share processing through user-provided cookies.
-- Word output for the original transcript.
-- Extra Word output generated from user templates and prompts.
-- Per-account prompt templates.
-- Retry failed tasks or failed extra document generation.
-- Batch download of generated Word files.
-- Account registration and login.
-- Admin page for account management and usage records.
+- Original transcript `.docx` output.
+- Extra `.docx` files generated from reusable prompts.
+- Built-in templates for `提炼版` and `思维导图`.
+- Per-account model configuration and prompt templates.
+- Retry failed jobs or only failed extra document generation.
+- Batch download for generated Word files.
+- Account login, admin user management, and usage records.
 - Usage tracking for ASR duration, AI tokens, and estimated cost.
-- SQLite-based single-machine persistence.
-- Native MCP HTTP endpoint for agent integration.
+- SQLite persistence for single-server deployments.
+- Native HTTP MCP endpoint for agent workflows.
 
 ## Tech Stack
 
@@ -83,6 +82,30 @@ To only check the environment:
 ```bash
 npm run doctor
 ```
+
+## Agent / OpenClaw Quick Test
+
+After starting the API server, the MCP endpoint is available at:
+
+```text
+http://localhost:5174/mcp
+```
+
+For OpenClaw running in Docker on the same machine, register V2W with:
+
+```bash
+openclaw mcp add v2w-local \
+  --transport streamable-http \
+  --url http://host.docker.internal:5174/mcp
+```
+
+Then verify tool discovery:
+
+```bash
+openclaw mcp probe v2w-local --json
+```
+
+V2W should expose `33` MCP tools in version `0.1.9`.
 
 ## Manual Setup
 
