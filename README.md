@@ -6,7 +6,7 @@ V2W is a self-hosted video-to-Word workspace. It can batch transcribe public vid
 
 The project is designed for small teams that want to run the full workflow on their own server.
 
-Current version: `0.1.6`
+Current version: `0.1.7`
 
 ## Screenshot
 
@@ -189,6 +189,10 @@ Available tools:
 | `v2w.baidu_qr.status` | Poll Baidu Netdisk QR authorization status |
 | `v2w.baidu_qr.cancel` | Cancel a Baidu Netdisk QR authorization session |
 | `v2w.templates.list` | List extra document templates, including default templates |
+| `v2w.templates.get` | Read one extra document template |
+| `v2w.templates.create` | Create an extra document template |
+| `v2w.templates.update` | Update an extra document template |
+| `v2w.templates.delete` | Delete an extra document template |
 | `v2w.jobs.submit` | Submit direct, page, Baidu Netdisk or Quark Netdisk links as jobs |
 | `v2w.jobs.list` | List jobs for the current account |
 | `v2w.jobs.get` | Read one job and its current progress |
@@ -235,6 +239,12 @@ Task workflow over MCP:
 7. Call `v2w.jobs.downloads` after completion.
 
 `v2w.jobs.submit` always uses the model configuration saved on the V2W account. Agents may pass runtime-only options such as `concurrency`, `directUrlMode`, or `publicBaseUrl`, but should not pass model secrets in job calls.
+
+Template workflow:
+
+- Call `v2w.templates.list` to ensure the built-in `提炼版` and `思维导图` templates exist for the account.
+- Call `v2w.templates.create` or `v2w.templates.update` when an agent needs to save reusable prompts for extra Word files.
+- Pass selected template titles and prompts as `extraPrompts` when calling `v2w.jobs.submit`.
 
 Manual netdisk authorization:
 

@@ -7,7 +7,7 @@ import { publicUserSettings, normalizeUserSettings, settingsFromUserConfig } fro
 import { DEFAULT_EXTRA_DOC_TEMPLATES } from "../defaults/templates.js";
 
 const MCP_PROTOCOL_VERSION = "2024-11-05";
-const SERVICE_VERSION = "0.1.6";
+const SERVICE_VERSION = "0.1.7";
 
 function jsonRpcResult(id, result) {
   return { jsonrpc: "2.0", id, result };
@@ -80,6 +80,23 @@ function publicTemplate(template) {
     createdAt: template.createdAt,
     updatedAt: template.updatedAt
   };
+}
+
+function normalizeTemplateInput(args = {}) {
+  const title = String(args.title || "").trim();
+  const prompt = String(args.prompt || "").trim();
+  if (!title) throw new Error("请填写模板名称。");
+  if (!prompt) throw new Error("请填写模板提示词。");
+  return {
+    title: title.slice(0, 80),
+    prompt: prompt.slice(0, 12000)
+  };
+}
+
+function getUserTemplate(store, userId, templateId) {
+  const template = store.listTemplates(userId).find((item) => item.id === String(templateId || ""));
+  if (!template) throw new Error("模板不存在。");
+  return template;
 }
 
 function qrPayload(session, baiduQrLogin, userId) {
@@ -326,6 +343,41 @@ export function registerMcpRoutes(app, ctx) {
       })
     },
     {
+      name: "v2w.templates.get",
+      description: "Read one extra document template for the current account.",
+      inputSchema: schema({
+        authToken: { type: "string" },
+        templateId: { type: "string" }
+      }, ["templateId"])
+    },
+    {
+      name: "v2w.templates.create",
+      description: "Create an extra document template for the current account.",
+      inputSchema: schema({
+        authToken: { type: "string" },
+        title: { type: "string" },
+        prompt: { type: "string" }
+      }, ["title", "prompt"])
+    },
+    {
+      name: "v2w.templates.update",
+      description: "Update an extra document template owned by the current account.",
+      inputSchema: schema({
+        authToken: { type: "string" },
+        templateId: { type: "string" },
+        title: { type: "string" },
+        prompt: { type: "string" }
+      }, ["templateId", "title", "prompt"])
+    },
+    {
+      name: "v2w.templates.delete",
+      description: "Delete an extra document template owned by the current account.",
+      inputSchema: schema({
+        authToken: { type: "string" },
+        templateId: { type: "string" }
+      }, ["templateId"])
+    },
+    {
       name: "v2w.jobs.submit",
       description: "Submit direct, page or supported netdisk video links as transcription jobs for the current account.",
       inputSchema: schema({
@@ -435,8 +487,14 @@ export function registerMcpRoutes(app, ctx) {
       return {
         name: "V2W",
         version: process.env.npm_package_version || SERVICE_VERSION,
+        endpoints: {
+          baseUrl: reqBaseUrl(req),
+          rest: `${reqBaseUrl(req)}/api`,
+          mcp: `${reqBaseUrl(req)}/mcp`
+        },
         mcp: {
           endpoint: "/mcp",
+          url: `${reqBaseUrl(req)}/mcp`,
           protocolVersion: MCP_PROTOCOL_VERSION,
           auth: "Call v2w.login first, then pass authToken in tool arguments or Authorization Bearer."
         },
@@ -570,6 +628,43 @@ export function registerMcpRoutes(app, ctx) {
 
     if (name === "v2w.templates.list") {
       return { templates: templateListWithDefaults(store, user.id).map(publicTemplate) };
+    }
+
+    if (name === "v2w.templates.get") {
+      return { template: publicTemplate(getUserTemplate(store, user.id, args.templateId)) };
+    }
+
+    if (name === "v2w.templates.create") {
+      const input = normalizeTemplateInput(args);
+      const template = {
+        id: nanoid(16),
+        userId: user.id,
+        title: input.title,
+        prompt: input.prompt,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      store.saveTemplate(template);
+      return { template: publicTemplate(template) };
+    }
+
+    if (name === "v2w.templates.update") {
+      const existing = getUserTemplate(store, user.id, args.templateId);
+      const input = normalizeTemplateInput(args);
+      const template = {
+        ...existing,
+        title: input.title,
+        prompt: input.prompt,
+        updatedAt: new Date().toISOString()
+      };
+      store.saveTemplate(template);
+      return { template: publicTemplate(template) };
+    }
+
+    if (name === "v2w.templates.delete") {
+      const deleted = store.deleteTemplate(user.id, args.templateId);
+      if (!deleted) throw new Error("模板不存在。");
+      return { ok: true, deletedTemplateId: args.templateId };
     }
 
     if (name === "v2w.jobs.submit") {
