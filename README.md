@@ -6,6 +6,8 @@ V2W is a self-hosted video-to-Word workspace. It can batch transcribe public vid
 
 The project is designed for small teams that want to run the full workflow on their own server.
 
+Current version: `0.1.3`
+
 ## Screenshot
 
 ![V2W web app](docs/screenshots/workspace.png)
@@ -28,6 +30,7 @@ The project is designed for small teams that want to run the full workflow on th
 - Admin page for account management and usage records.
 - Usage tracking for ASR duration, AI tokens, and estimated cost.
 - SQLite-based single-machine persistence.
+- Native MCP HTTP endpoint for agent integration.
 
 ## Tech Stack
 
@@ -147,6 +150,64 @@ Each app account keeps an independent netdisk authorization state.
 ### Quark Netdisk
 
 Quark Netdisk support uses cookies copied from a logged-in Quark web session. Paste the cookies in the netdisk authorization card before submitting Quark share links.
+
+## MCP Integration
+
+V2W exposes a native MCP-compatible HTTP endpoint after deployment:
+
+```text
+POST /mcp
+```
+
+For a local development server:
+
+```text
+http://localhost:5174/mcp
+```
+
+Implemented MCP methods:
+
+- `initialize`
+- `tools/list`
+- `tools/call`
+
+Available tools:
+
+| Tool | Description |
+| --- | --- |
+| `v2w.service_info` | Read service status, runtime limits and queue status |
+| `v2w.login` | Log in with a V2W account and return an `authToken` |
+| `v2w.config.get` | Read the current account model configuration with secrets redacted |
+| `v2w.config.save` | Save model and optional OSS configuration for the account |
+| `v2w.netdisk.status` | Read Baidu or Quark authorization status |
+| `v2w.baidu_qr.start` | Start Baidu Netdisk QR authorization |
+| `v2w.baidu_qr.status` | Poll Baidu Netdisk QR authorization status |
+| `v2w.templates.list` | List extra document templates, including default templates |
+
+Authentication flow:
+
+1. Call `v2w.login` with `username` and `password`.
+2. Pass the returned `authToken` in later tool arguments.
+3. Alternatively, pass the token as `Authorization: Bearer <token>`.
+
+Example JSON-RPC call:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "v2w.login",
+    "arguments": {
+      "username": "admin",
+      "password": "your-password"
+    }
+  }
+}
+```
+
+Baidu QR authorization returns `qrImageDataUrl` when the QR image is ready. Agents can render that data URL directly for users to scan with the Baidu Netdisk app. `qrImageUrl` is also returned for clients that can call the protected V2W HTTP API with authentication.
 
 ## Runtime Data
 

@@ -42,6 +42,7 @@ import {
 } from "./services/ai.js";
 import { writeWord } from "./services/word.js";
 import { registerRoutes } from "./routes.js";
+import { registerMcpRoutes } from "./mcp/http.js";
 import { detectNetdiskProvider, unsupportedNetdiskMessage } from "./services/netdisk.js";
 import { extractAudio, hasOssConfig, probeDurationSec, resolveAsrMediaUrl } from "./services/media.js";
 import { downloadHttp } from "./services/downloaders/http.js";
@@ -1344,6 +1345,14 @@ registerRoutes(app, {
   store,
   userQueuedCount,
   userRunningCount,
+  users
+});
+
+registerMcpRoutes(app, {
+  baiduQrLogin,
+  getNetdiskAccount,
+  runtimeStats,
+  store,
   users
 });
 
