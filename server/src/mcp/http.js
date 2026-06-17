@@ -7,7 +7,7 @@ import { publicUserSettings, normalizeUserSettings, settingsFromUserConfig } fro
 import { DEFAULT_EXTRA_DOC_TEMPLATES } from "../defaults/templates.js";
 
 const MCP_PROTOCOL_VERSION = "2024-11-05";
-const SERVICE_VERSION = "0.1.5";
+const SERVICE_VERSION = "0.1.6";
 
 function jsonRpcResult(id, result) {
   return { jsonrpc: "2.0", id, result };
@@ -175,10 +175,13 @@ export function registerMcpRoutes(app, ctx) {
     publicJob,
     pumpQueue,
     queue,
+    loginQuark,
     removeJobFiles,
+    redactSecret,
     retryJob,
     retryJobExtras,
     runCommand,
+    runPcsCommand,
     runtimeStats,
     setMaxConcurrency,
     store,
@@ -280,6 +283,19 @@ export function registerMcpRoutes(app, ctx) {
       }, ["provider"])
     },
     {
+      name: "v2w.netdisk.login",
+      description: "Authorize Baidu or Quark Netdisk for the current account with copied browser cookies or Baidu BDUSS credentials.",
+      inputSchema: schema({
+        authToken: { type: "string" },
+        provider: { type: "string", enum: ["baidu", "quark"] },
+        mode: { type: "string", enum: ["cookies", "bduss"], description: "Baidu supports cookies or bduss. Quark supports cookies only." },
+        cookies: { type: "string", description: "Browser Cookie header for Baidu or Quark." },
+        bduss: { type: "string", description: "Baidu BDUSS value." },
+        stoken: { type: "string", description: "Optional Baidu STOKEN value." },
+        ptoken: { type: "string", description: "Optional Baidu PTOKEN value." }
+      }, ["provider"])
+    },
+    {
       name: "v2w.baidu_qr.start",
       description: "Start Baidu Netdisk QR authorization for the current V2W account.",
       inputSchema: schema({
@@ -289,6 +305,14 @@ export function registerMcpRoutes(app, ctx) {
     {
       name: "v2w.baidu_qr.status",
       description: "Read Baidu Netdisk QR authorization status. When qrImageUrl is present, open it for scanning.",
+      inputSchema: schema({
+        authToken: { type: "string" },
+        sessionId: { type: "string" }
+      }, ["sessionId"])
+    },
+    {
+      name: "v2w.baidu_qr.cancel",
+      description: "Cancel a Baidu Netdisk QR authorization session.",
       inputSchema: schema({
         authToken: { type: "string" },
         sessionId: { type: "string" }
@@ -460,6 +484,73 @@ export function registerMcpRoutes(app, ctx) {
       };
     }
 
+    if (name === "v2w.netdisk.login") {
+      const provider = String(args.provider || "baidu");
+      const cookies = String(args.cookies || "").trim();
+      const secrets = [cookies, args.bduss, args.stoken, args.ptoken];
+
+      if (provider === "quark") {
+        if (!loginQuark) throw new Error("当前服务未启用夸克网盘登录能力。");
+        try {
+          const account = await loginQuark(user.id, cookies);
+          return {
+            ok: Boolean(account.loggedIn),
+            provider: "quark",
+            account: {
+              provider: "quark",
+              loggedIn: Boolean(account.loggedIn),
+              username: account.account || "",
+              updatedAt: account.updatedAt || null
+            },
+            output: redactSecret ? redactSecret(account.raw || "", secrets) : ""
+          };
+        } catch (err) {
+          throw new Error((redactSecret ? redactSecret(err.message, secrets) : err.message) || "夸克网盘登录失败。");
+        }
+      }
+
+      if (provider !== "baidu") throw new Error("当前只支持 baidu 或 quark。");
+      if (!runPcsCommand) throw new Error("当前服务未启用 BaiduPCS-Go。");
+
+      const mode = String(args.mode || "cookies");
+      const pcsArgs = ["login"];
+      if (mode === "cookies") {
+        if (!cookies) throw new Error("请填写百度网盘 Cookies。");
+        pcsArgs.push(`-cookies=${cookies}`);
+      } else if (mode === "bduss") {
+        const bduss = String(args.bduss || "").trim();
+        if (!bduss) throw new Error("请填写 BDUSS。");
+        pcsArgs.push(`-bduss=${bduss}`);
+        if (String(args.stoken || "").trim()) pcsArgs.push(`-stoken=${String(args.stoken).trim()}`);
+        if (String(args.ptoken || "").trim()) pcsArgs.push(`-ptoken=${String(args.ptoken).trim()}`);
+      } else {
+        throw new Error("百度网盘 MCP 登录只支持 cookies 或 bduss。");
+      }
+
+      try {
+        const result = await runPcsCommand(pcsArgs, user.id);
+        const account = await getNetdiskAccount(user.id, "baidu");
+        const output = [
+          `${result.stdout || ""}${result.stderr || ""}`.trim(),
+          account.raw || ""
+        ].filter(Boolean).join("\n");
+        return {
+          ok: Boolean(account?.loggedIn),
+          provider: "baidu",
+          account: {
+            provider: "baidu",
+            loggedIn: Boolean(account?.loggedIn),
+            username: account?.username || account?.account || "",
+            uid: account?.uid || "",
+            updatedAt: account?.updatedAt || null
+          },
+          output: redactSecret ? redactSecret(output, secrets) : output
+        };
+      } catch (err) {
+        throw new Error((redactSecret ? redactSecret(err.message, secrets) : err.message) || "百度网盘登录失败。");
+      }
+    }
+
     if (name === "v2w.baidu_qr.start") {
       const session = await baiduQrLogin.start(user.id);
       return qrPayload(session, baiduQrLogin, user.id);
@@ -469,6 +560,12 @@ export function registerMcpRoutes(app, ctx) {
       const session = baiduQrLogin.status(args.sessionId, user.id);
       if (!session) throw new Error("扫码会话不存在或已过期。");
       return qrPayload(session, baiduQrLogin, user.id);
+    }
+
+    if (name === "v2w.baidu_qr.cancel") {
+      const ok = await baiduQrLogin.cancel(args.sessionId, user.id);
+      if (!ok) throw new Error("扫码登录会话不存在或已结束。");
+      return { ok: true, sessionId: args.sessionId };
     }
 
     if (name === "v2w.templates.list") {

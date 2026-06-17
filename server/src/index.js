@@ -1353,10 +1353,14 @@ registerMcpRoutes(app, {
   getNetdiskAccount,
   hasEnoughDiskForNextJob,
   jobs,
+  loginQuark(userId, cookies) {
+    return loginQuarkAccount(store, userId, cookies);
+  },
   publicJob,
   pumpQueue,
   queue,
   removeJobFiles,
+  redactSecret,
   retryJob(job, settings = {}) {
     requeueJob(job, settings);
   },
@@ -1378,6 +1382,7 @@ registerMcpRoutes(app, {
       });
   },
   runCommand,
+  runPcsCommand,
   runtimeStats,
   setMaxConcurrency(value) {
     maxConcurrency = value;

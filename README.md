@@ -6,7 +6,7 @@ V2W is a self-hosted video-to-Word workspace. It can batch transcribe public vid
 
 The project is designed for small teams that want to run the full workflow on their own server.
 
-Current version: `0.1.5`
+Current version: `0.1.6`
 
 ## Screenshot
 
@@ -184,8 +184,10 @@ Available tools:
 | `v2w.config.save` | Save model and optional OSS configuration for the account |
 | `v2w.config.test` | Test saved or supplied OpenAI-compatible model configuration |
 | `v2w.netdisk.status` | Read Baidu or Quark authorization status |
+| `v2w.netdisk.login` | Authorize Baidu or Quark with copied browser cookies; Baidu also supports BDUSS |
 | `v2w.baidu_qr.start` | Start Baidu Netdisk QR authorization |
 | `v2w.baidu_qr.status` | Poll Baidu Netdisk QR authorization status |
+| `v2w.baidu_qr.cancel` | Cancel a Baidu Netdisk QR authorization session |
 | `v2w.templates.list` | List extra document templates, including default templates |
 | `v2w.jobs.submit` | Submit direct, page, Baidu Netdisk or Quark Netdisk links as jobs |
 | `v2w.jobs.list` | List jobs for the current account |
@@ -227,12 +229,19 @@ Task workflow over MCP:
 1. Call `v2w.login`.
 2. Call `v2w.config.get`; if no config exists, call `v2w.config.save`.
 3. Call `v2w.config.test` to verify the AI processing model before submitting work.
-4. For Baidu Netdisk links, call `v2w.netdisk.status`; if needed, use `v2w.baidu_qr.start` and poll `v2w.baidu_qr.status`.
+4. For Baidu Netdisk links, call `v2w.netdisk.status`; if needed, use `v2w.baidu_qr.start` and poll `v2w.baidu_qr.status`. Use `v2w.baidu_qr.cancel` if the user abandons the QR login.
 5. Call `v2w.jobs.submit` with `links` and optional `extraPrompts`.
 6. Poll `v2w.jobs.list` or `v2w.jobs.get`.
 7. Call `v2w.jobs.downloads` after completion.
 
 `v2w.jobs.submit` always uses the model configuration saved on the V2W account. Agents may pass runtime-only options such as `concurrency`, `directUrlMode`, or `publicBaseUrl`, but should not pass model secrets in job calls.
+
+Manual netdisk authorization:
+
+- Baidu: call `v2w.netdisk.login` with `{ "provider": "baidu", "mode": "cookies", "cookies": "BDUSS=...; STOKEN=..." }`, or with `{ "provider": "baidu", "mode": "bduss", "bduss": "...", "stoken": "..." }`.
+- Quark: call `v2w.netdisk.login` with `{ "provider": "quark", "mode": "cookies", "cookies": "__pus=...; __puus=..." }`.
+
+MCP responses redact known credential fields from command output. Clients should still avoid logging raw cookies or tokens.
 
 ## Runtime Data
 
