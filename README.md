@@ -6,7 +6,7 @@ V2W is a self-hosted video-to-Word workspace. It can batch transcribe public vid
 
 The project is designed for small teams that want to run the full workflow on their own server.
 
-Current version: `0.1.8`
+Current version: `0.1.9`
 
 ## Screenshot
 
@@ -179,6 +179,8 @@ Available tools:
 | `v2w.setup.create_admin` | Create the first administrator account before any account exists |
 | `v2w.account.register` | Create a password account and return an `authToken` |
 | `v2w.service_info` | Read service status, runtime limits and queue status |
+| `v2w.mcp.capabilities` | Read grouped MCP capabilities for agent planning |
+| `v2w.mcp.self_check` | Run an authenticated MCP integration self-check |
 | `v2w.login` | Log in with a V2W account and return an `authToken` |
 | `v2w.config.get` | Read the current account model configuration with secrets redacted |
 | `v2w.config.save` | Save model and optional OSS configuration for the account |
@@ -210,10 +212,12 @@ Available tools:
 Authentication flow:
 
 1. Call `v2w.setup.status` after deployment.
-2. If `needsAdmin` is `true`, call `v2w.setup.create_admin`.
-3. Otherwise call `v2w.login` with `username` and `password`, or create a user with `v2w.account.register`.
-4. Pass the returned `authToken` in later tool arguments.
-5. Alternatively, pass the token as `Authorization: Bearer <token>`.
+2. Call `v2w.mcp.capabilities` if the agent needs a grouped capability map.
+3. If `needsAdmin` is `true`, call `v2w.setup.create_admin`.
+4. Otherwise call `v2w.login` with `username` and `password`, or create a user with `v2w.account.register`.
+5. Pass the returned `authToken` in later tool arguments.
+6. Call `v2w.mcp.self_check` to verify account model configuration, netdisk authorization and job state.
+7. Alternatively, pass the token as `Authorization: Bearer <token>`.
 
 Example JSON-RPC call:
 

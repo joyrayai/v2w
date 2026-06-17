@@ -8,7 +8,7 @@ import { publicUsageRecord, usageDateRange } from "../services/usage.js";
 import { DEFAULT_EXTRA_DOC_TEMPLATES } from "../defaults/templates.js";
 
 const MCP_PROTOCOL_VERSION = "2024-11-05";
-const SERVICE_VERSION = "0.1.8";
+const SERVICE_VERSION = "0.1.9";
 
 function jsonRpcResult(id, result) {
   return { jsonrpc: "2.0", id, result };
@@ -79,6 +79,10 @@ function jobCountsForUser(jobs, userId) {
     done: userJobs.filter((job) => job.status === "done").length,
     error: userJobs.filter((job) => job.status === "error").length
   };
+}
+
+function toolNamesByPrefix(tools, prefix) {
+  return tools.map((tool) => tool.name).filter((name) => name.startsWith(prefix));
 }
 
 function readBearer(req) {
@@ -300,6 +304,18 @@ export function registerMcpRoutes(app, ctx) {
       name: "v2w.service_info",
       description: "Read V2W service status, runtime limits, queue status and tool availability.",
       inputSchema: schema()
+    },
+    {
+      name: "v2w.mcp.capabilities",
+      description: "Read grouped MCP capabilities for agent integration planning.",
+      inputSchema: schema()
+    },
+    {
+      name: "v2w.mcp.self_check",
+      description: "Run an authenticated MCP integration self-check for the current account.",
+      inputSchema: schema({
+        authToken: { type: "string" }
+      })
     },
     {
       name: "v2w.login",
@@ -575,6 +591,30 @@ export function registerMcpRoutes(app, ctx) {
       return { authToken: signToken(user), user: publicUser(user) };
     }
 
+    if (name === "v2w.mcp.capabilities") {
+      return {
+        version: process.env.npm_package_version || SERVICE_VERSION,
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        endpoint: `${reqBaseUrl(req)}/mcp`,
+        methods: ["initialize", "tools/list", "tools/call"],
+        toolGroups: {
+          setup: toolNamesByPrefix(tools, "v2w.setup."),
+          account: ["v2w.account.register", "v2w.login"],
+          config: toolNamesByPrefix(tools, "v2w.config."),
+          netdisk: [
+            ...toolNamesByPrefix(tools, "v2w.netdisk."),
+            ...toolNamesByPrefix(tools, "v2w.baidu_qr.")
+          ],
+          templates: toolNamesByPrefix(tools, "v2w.templates."),
+          jobs: toolNamesByPrefix(tools, "v2w.jobs."),
+          usage: toolNamesByPrefix(tools, "v2w.usage."),
+          admin: toolNamesByPrefix(tools, "v2w.admin.")
+        },
+        supportedNetdisks: ["baidu", "quark"],
+        supportedJobInputs: ["direct_media_url", "bilibili_page", "baidu_netdisk_share", "quark_netdisk_share"]
+      };
+    }
+
     if (name === "v2w.service_info") {
       return {
         name: "V2W",
@@ -588,8 +628,11 @@ export function registerMcpRoutes(app, ctx) {
           endpoint: "/mcp",
           url: `${reqBaseUrl(req)}/mcp`,
           protocolVersion: MCP_PROTOCOL_VERSION,
+          capabilitiesTool: "v2w.mcp.capabilities",
+          selfCheckTool: "v2w.mcp.self_check",
           auth: "Call v2w.login first, then pass authToken in tool arguments or Authorization Bearer."
         },
+        toolCount: tools.length,
         runtime: runtimeStats()
       };
     }
@@ -603,6 +646,32 @@ export function registerMcpRoutes(app, ctx) {
     }
 
     const { user } = authFromArgs(req, args, users);
+
+    if (name === "v2w.mcp.self_check") {
+      const setup = await setupStatus();
+      const config = store.getUserSettings(user.id);
+      const [baidu, quark] = await Promise.all([
+        getNetdiskAccount(user.id, "baidu").catch(() => null),
+        getNetdiskAccount(user.id, "quark").catch(() => null)
+      ]);
+      const counts = jobCountsForUser(jobs, user.id);
+      return {
+        ok: true,
+        user: publicUser(user),
+        setup,
+        account: {
+          hasModelConfig: Boolean(config),
+          baiduNetdiskLoggedIn: Boolean(baidu?.loggedIn),
+          quarkNetdiskLoggedIn: Boolean(quark?.loggedIn)
+        },
+        jobs: counts,
+        nextRecommendedActions: [
+          !config ? "Call v2w.config.save before submitting jobs." : "",
+          !baidu?.loggedIn ? "For Baidu Netdisk links, call v2w.baidu_qr.start or v2w.netdisk.login." : "",
+          !quark?.loggedIn ? "For Quark Netdisk links, call v2w.netdisk.login." : ""
+        ].filter(Boolean)
+      };
+    }
 
     if (name === "v2w.config.get") {
       return { user: publicUser(user), config: publicUserSettings(store.getUserSettings(user.id)) };
