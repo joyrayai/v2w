@@ -1351,8 +1351,39 @@ registerRoutes(app, {
 registerMcpRoutes(app, {
   baiduQrLogin,
   getNetdiskAccount,
+  hasEnoughDiskForNextJob,
+  jobs,
+  publicJob,
+  pumpQueue,
+  queue,
+  removeJobFiles,
+  retryJob(job, settings = {}) {
+    requeueJob(job, settings);
+  },
+  retryJobExtras(job, retrySettings = {}) {
+    if (job.status === "running" || job.status === "queued") throw new Error("任务正在处理，不能重复重试。");
+    running += 1;
+    retryJobExtraDocs(job, retrySettings)
+      .catch((err) => markFinished(job, {
+        status: "done",
+        step: "完成，部分额外文件失败",
+        error: err.message,
+        retryableExtraFailure: true,
+        progress: 100,
+        phaseProgress: 100
+      }))
+      .finally(() => {
+        running -= 1;
+        pumpQueue();
+      });
+  },
   runtimeStats,
+  setMaxConcurrency(value) {
+    maxConcurrency = value;
+  },
   store,
+  userQueuedCount,
+  userRunningCount,
   users
 });
 

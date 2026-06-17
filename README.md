@@ -6,7 +6,7 @@ V2W is a self-hosted video-to-Word workspace. It can batch transcribe public vid
 
 The project is designed for small teams that want to run the full workflow on their own server.
 
-Current version: `0.1.3`
+Current version: `0.1.4`
 
 ## Screenshot
 
@@ -183,6 +183,13 @@ Available tools:
 | `v2w.baidu_qr.start` | Start Baidu Netdisk QR authorization |
 | `v2w.baidu_qr.status` | Poll Baidu Netdisk QR authorization status |
 | `v2w.templates.list` | List extra document templates, including default templates |
+| `v2w.jobs.submit` | Submit direct, page, Baidu Netdisk or Quark Netdisk links as jobs |
+| `v2w.jobs.list` | List jobs for the current account |
+| `v2w.jobs.get` | Read one job and its current progress |
+| `v2w.jobs.retry` | Retry a failed job, or retry only failed extra documents when possible |
+| `v2w.jobs.retry_extra` | Retry only failed extra documents from cached transcript text |
+| `v2w.jobs.delete` | Delete a non-running job and its files |
+| `v2w.jobs.downloads` | Return generated document download URLs and a batch ZIP URL |
 
 Authentication flow:
 
@@ -208,6 +215,17 @@ Example JSON-RPC call:
 ```
 
 Baidu QR authorization returns `qrImageDataUrl` when the QR image is ready. Agents can render that data URL directly for users to scan with the Baidu Netdisk app. `qrImageUrl` is also returned for clients that can call the protected V2W HTTP API with authentication.
+
+Task workflow over MCP:
+
+1. Call `v2w.login`.
+2. Call `v2w.config.get`; if no config exists, call `v2w.config.save`.
+3. For Baidu Netdisk links, call `v2w.netdisk.status`; if needed, use `v2w.baidu_qr.start` and poll `v2w.baidu_qr.status`.
+4. Call `v2w.jobs.submit` with `links` and optional `extraPrompts`.
+5. Poll `v2w.jobs.list` or `v2w.jobs.get`.
+6. Call `v2w.jobs.downloads` after completion.
+
+`v2w.jobs.submit` always uses the model configuration saved on the V2W account. Agents may pass runtime-only options such as `concurrency`, `directUrlMode`, or `publicBaseUrl`, but should not pass model secrets in job calls.
 
 ## Runtime Data
 
