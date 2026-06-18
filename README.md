@@ -22,6 +22,7 @@ Current version: `0.1.9`
 - Quark Netdisk share processing through user-provided cookies.
 - Original transcript `.docx` output.
 - Extra `.docx` files generated from reusable prompts.
+- Per-extra-document output format instructions rendered into real Word styles.
 - Built-in templates for `提炼版` and `思维导图`.
 - Per-account model configuration and prompt templates.
 - Retry failed jobs or only failed extra document generation.
@@ -156,6 +157,22 @@ The default provider preset uses Alibaba Cloud Model Studio:
 - AI model: configurable OpenAI-compatible chat model
 
 Other OpenAI-compatible providers can be used for extra document generation by setting the base URL, API key, and model name in the model configuration page.
+
+## Output Format Requirements
+
+Each extra document can optionally include its own output format requirement. When enabled, V2W asks the AI model to return a structured JSON document with style definitions and content blocks, then renders that structure into a `.docx` file.
+
+This is more reliable than asking the model to “look like” a Word document in plain text, because V2W writes the resulting font, size, bold, alignment, line spacing, and first-line indentation into the Word file itself.
+
+Example requirements:
+
+```text
+一级标题：宋体、二号、加粗、居中
+二级标题：黑体、三号、不加粗
+正文：仿宋、三号、不加粗
+行间距：固定值 28 磅
+首行缩进 2 字符，两端对齐
+```
 
 ## Netdisk Authorization
 

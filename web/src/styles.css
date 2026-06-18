@@ -767,6 +767,35 @@ textarea { resize: vertical; min-height: 92px; line-height: 1.5; }
   min-height: 66px;
   max-height: 180px;
 }
+.formatRequirementBox {
+  display: grid;
+  gap: 0;
+}
+.formatToggle {
+  width: fit-content;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(150,170,210,.24);
+  border-radius: 999px;
+  background: rgba(255,255,255,.68);
+}
+.formatRequirementBody {
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: max-height .2s ease, opacity .18s ease, transform .18s ease, padding-top .18s ease;
+}
+.formatRequirementBox.open .formatRequirementBody {
+  max-height: 180px;
+  opacity: 1;
+  transform: translateY(0);
+  padding-top: 8px;
+}
+.formatRequirementBody textarea {
+  min-height: 72px;
+  max-height: 150px;
+}
 .templateActions {
   display: flex;
   flex-direction: column;

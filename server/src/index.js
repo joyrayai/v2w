@@ -971,6 +971,39 @@ function fileExistsForLabel(files = [], label) {
   return files.some((file) => String(file?.label || "").trim() === target && fs.existsSync(outputFilePath(file)));
 }
 
+function promptWithFormatRequirement(prompt, formatRequirement) {
+  const basePrompt = String(prompt || "").trim();
+  const formatText = String(formatRequirement || "").trim();
+  if (!formatText) return basePrompt;
+  return [
+    basePrompt,
+    "",
+    "统一输出格式要求如下。请在满足上方文件处理要求的同时严格遵守：",
+    formatText,
+    "",
+    "请不要直接输出 Markdown 正文。请只输出一个严格 JSON 对象，系统会解析这个 JSON 并渲染成 Word。",
+    "JSON 不要放进代码块，不要附加解释文字。",
+    "JSON 结构如下：",
+    "{",
+    "  \"styles\": {",
+    "    \"h1\": { \"font\": \"宋体\", \"sizePt\": 22, \"bold\": true, \"align\": \"left\", \"lineSpacingPt\": 28 },",
+    "    \"h2\": { \"font\": \"黑体\", \"sizePt\": 16, \"bold\": false, \"align\": \"left\", \"lineSpacingPt\": 28 },",
+    "    \"h3\": { \"font\": \"楷体\", \"sizePt\": 16, \"bold\": false, \"align\": \"left\", \"lineSpacingPt\": 28 },",
+    "    \"body\": { \"font\": \"仿宋\", \"sizePt\": 16, \"bold\": false, \"align\": \"justify\", \"lineSpacingPt\": 28, \"firstLineIndentChars\": 2 }",
+    "  },",
+    "  \"blocks\": [",
+    "    { \"type\": \"h1\", \"text\": \"一级标题\" },",
+    "    { \"type\": \"h2\", \"text\": \"二级标题\" },",
+    "    { \"type\": \"h3\", \"text\": \"三级标题\" },",
+    "    { \"type\": \"p\", \"text\": \"正文段落\" },",
+    "    { \"type\": \"bullet\", \"text\": \"无序列表项\" },",
+    "    { \"type\": \"numbered\", \"text\": \"有序列表项\" }",
+    "  ]",
+    "}",
+    "请根据用户的格式要求填写 styles，不要照抄示例样式；正文内容全部放入 blocks。"
+  ].filter(Boolean).join("\n");
+}
+
 async function generateExtraFilesForJob(job, rawText, entries, options = {}) {
   const settings = options.settingsOverride || job.settings || {};
   const files = Array.isArray(job.outputFiles) ? [...job.outputFiles] : [];
@@ -983,6 +1016,7 @@ async function generateExtraFilesForJob(job, rawText, entries, options = {}) {
   for (let localIndex = 0; localIndex < entries.length; localIndex += 1) {
     const item = entries[localIndex];
     const docLabel = item.title || `额外文档 ${item.index + 1}`;
+    const itemFormatRequirement = item.formatEnabled ? String(item.formatRequirement || "").trim() : "";
     if (options.skipExisting && completedIndexes.has(item.index) && fileExistsForLabel(files, docLabel)) continue;
     updatePhase(
       job,
@@ -992,7 +1026,8 @@ async function generateExtraFilesForJob(job, rawText, entries, options = {}) {
       15
     );
     try {
-      const result = await polishTextDetailed(rawText, item.prompt, settings);
+      const generationPrompt = promptWithFormatRequirement(item.prompt, itemFormatRequirement);
+      const result = await polishTextDetailed(rawText, generationPrompt, settings);
       const llmUsage = llmUsageFromResponse(result);
       const totalTokens = llmUsage.totalTokens || llmUsage.inputTokens + llmUsage.outputTokens;
       if (totalTokens || llmUsage.inputTokens || llmUsage.outputTokens) {
@@ -1007,14 +1042,16 @@ async function generateExtraFilesForJob(job, rawText, entries, options = {}) {
           totalTokens,
           meta: {
             extraTitle: docLabel,
-            promptPreview: String(item.prompt || "").slice(0, 500),
+            promptPreview: String(generationPrompt || "").slice(0, 500),
+            hasFormatRequirement: Boolean(itemFormatRequirement),
             retry: Boolean(options.retry)
           }
         });
       }
       const output = await writeWord(job, result.content, {
         suffix: docLabel,
-        title: `${job.title} - ${docLabel}`
+        title: `${job.title} - ${docLabel}`,
+        formatRequirement: itemFormatRequirement
       });
       const fileEntry = { label: docLabel, url: `/outputs/${encodeURIComponent(output.fileName)}` };
       const existingIndex = files.findIndex((file) => String(file.label || "") === docLabel);

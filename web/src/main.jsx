@@ -1030,7 +1030,14 @@ function ExtraDocs({ docs, setDocs }) {
     setDocs(docs.map((doc) => ({ ...doc, smartTitle: enabled })));
   };
   const addDoc = () => {
-    setDocs([...docs, { title: "", prompt: "", templateId: "", smartTitle: smartTitleEnabled }]);
+    setDocs([...docs, {
+      title: "",
+      prompt: "",
+      templateId: "",
+      smartTitle: smartTitleEnabled,
+      formatEnabled: false,
+      formatRequirement: ""
+    }]);
   };
   const loadTemplates = async () => {
     setTemplateError("");
@@ -1266,6 +1273,25 @@ function ExtraDocs({ docs, setDocs }) {
                 <label className="docField docPrompt">提示词
                   <textarea placeholder="例如：请扩写成专家演讲稿，不少于 4000 字；或生成内容大纲、用户问答。" value={doc.prompt} onChange={(e) => setDocs(docs.map((item, i) => i === index ? { ...item, prompt: e.target.value, templateId: item.templateId || "" } : item))} />
                 </label>
+                <div className={`formatRequirementBox ${doc.formatEnabled ? "open" : ""}`}>
+                  <label className="checkLine formatToggle">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(doc.formatEnabled)}
+                      onChange={(e) => setDocs(docs.map((item, i) => i === index ? { ...item, formatEnabled: e.target.checked } : item))}
+                    />
+                    输出格式
+                  </label>
+                  <div className="formatRequirementBody">
+                    <label className="docField">格式要求
+                      <textarea
+                        placeholder="例如：一级标题宋体二号加粗；正文仿宋三号，固定行距 28 磅，首行缩进 2 字符，两端对齐。"
+                        value={doc.formatRequirement || ""}
+                        onChange={(e) => setDocs(docs.map((item, i) => i === index ? { ...item, formatRequirement: e.target.value } : item))}
+                      />
+                    </label>
+                  </div>
+                </div>
               </div>
             </div>
           ))}
