@@ -6,7 +6,7 @@ V2W is a self-hosted workspace for turning videos into Word documents. It suppor
 
 The project is designed for small teams that need repeatable video-to-document workflows on their own server, with account-based model settings, reusable prompt templates, usage tracking, retryable jobs, and a native MCP endpoint for agent integrations such as OpenClaw.
 
-Current version: `0.1.9`
+Current version: `0.2.0`
 
 ## Screenshot
 
@@ -29,6 +29,7 @@ Current version: `0.1.9`
 - Batch download for generated Word files.
 - Account login, admin user management, and usage records.
 - Usage tracking for ASR duration, AI tokens, and estimated cost.
+- Optional enterprise content review with administrator-managed rule packs, dedicated review model settings, high-risk download locks, and approval records.
 - SQLite persistence for single-server deployments.
 - Native HTTP MCP endpoint for agent workflows.
 
@@ -106,7 +107,7 @@ Then verify tool discovery:
 openclaw mcp probe v2w-local --json
 ```
 
-V2W should expose `33` MCP tools in version `0.1.9`.
+V2W should expose `33` MCP tools in version `0.2.0`.
 
 ## Manual Setup
 
@@ -144,6 +145,7 @@ Common environment variables:
 | `MIN_FREE_DISK_GB` | `6` | Stop starting new tasks when free disk is below this value |
 | `CHROME_PATH` | empty | Optional Chrome path for QR-code login |
 | `CHROMIUM_PATH` | empty | Optional Chromium path for QR-code login |
+| `REVIEW_CONTEXT_LIMIT_TOKENS` | `1000000` | Context budget for optional enterprise document review |
 
 Do not commit real `.env` files, API keys, cookies, SQLite databases, or generated documents.
 
@@ -173,6 +175,23 @@ Example requirements:
 行间距：固定值 28 磅
 首行缩进 2 字符，两端对齐
 ```
+
+## Enterprise Review
+
+V2W `0.2.0` adds an optional enterprise review workflow for teams that need post-generation compliance checks.
+
+This capability is disabled by default and enabled per account by an administrator. Standard users who only need transcription and prompt-based Word generation do not need to configure or interact with it. When enabled, completed jobs are reviewed against the active rule pack after the transcript and extra Word files are generated.
+
+Enterprise review includes:
+
+- Markdown rule-pack import and versioning.
+- Separate administrator-managed OpenAI-compatible review model configuration.
+- Automatic review of the generated transcript and extra documents.
+- Large-context handling that batches files or slices oversized files with result aggregation.
+- High-risk job download locking until an administrator records an approval reason.
+- Retryable review runs without regenerating the original documents.
+
+Review text is stored separately from the job payload in SQLite, so normal job loading remains lightweight even when many generated documents are reviewed.
 
 ## Netdisk Authorization
 
@@ -302,6 +321,7 @@ Usage and admin workflow:
 - Call `v2w.usage.records` when an agent needs itemized records for a report.
 - Call `v2w.usage.pricing` to explain how local cost estimates are calculated.
 - Admin accounts can call `v2w.admin.users`, `v2w.admin.usage.summary`, and `v2w.admin.usage.records` for organization-level reporting.
+- Enterprise review is managed through the web admin API and UI. It is intentionally outside the default MCP workflow so standard users and general-purpose agents are not exposed to compliance controls unless an administrator enables them.
 
 Manual netdisk authorization:
 

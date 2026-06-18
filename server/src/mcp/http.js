@@ -8,7 +8,7 @@ import { publicUsageRecord, usageDateRange } from "../services/usage.js";
 import { DEFAULT_EXTRA_DOC_TEMPLATES } from "../defaults/templates.js";
 
 const MCP_PROTOCOL_VERSION = "2024-11-05";
-const SERVICE_VERSION = "0.1.9";
+const SERVICE_VERSION = "0.2.0";
 
 function jsonRpcResult(id, result) {
   return { jsonrpc: "2.0", id, result };

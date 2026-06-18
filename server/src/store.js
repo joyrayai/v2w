@@ -65,6 +65,64 @@ export function createStore({ sqliteFile, usersFile }) {
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_extra_doc_templates_user_updated ON extra_doc_templates(user_id, updated_at);
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      payload TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS review_rule_packs (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      version TEXT NOT NULL,
+      markdown TEXT NOT NULL,
+      summary_json TEXT,
+      active INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_review_rule_packs_active ON review_rule_packs(active, updated_at);
+    CREATE TABLE IF NOT EXISTS review_runs (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      risk_level TEXT NOT NULL DEFAULT 'none',
+      action TEXT NOT NULL DEFAULT 'pass',
+      model TEXT,
+      rule_pack_id TEXT,
+      rule_pack_version TEXT,
+      result_json TEXT,
+      error TEXT,
+      locked INTEGER NOT NULL DEFAULT 0,
+      overridden INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_review_runs_job ON review_runs(job_id, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_review_runs_status ON review_runs(status, risk_level, locked);
+    CREATE TABLE IF NOT EXISTS review_outputs (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      url TEXT,
+      text TEXT NOT NULL,
+      order_index INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_review_outputs_job ON review_outputs(job_id, updated_at);
+    CREATE TABLE IF NOT EXISTS review_overrides (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL,
+      review_run_id TEXT,
+      admin_user_id TEXT NOT NULL,
+      admin_username TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      snapshot_json TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_review_overrides_job ON review_overrides(job_id, created_at);
   `);
 
   function migrateUsersJson() {
@@ -115,6 +173,117 @@ export function createStore({ sqliteFile, usersFile }) {
     `).run(user.id, user.username, user.passwordHash, user.provider || "password", user.createdAt);
   }
 
+  function migrateReviewOutputsSchema() {
+    const columns = db.prepare("PRAGMA table_info(review_outputs)").all();
+    const columnNames = new Set(columns.map((column) => column.name));
+    if (!columnNames.has("id")) {
+      const tx = db.transaction(() => {
+        db.exec(`
+          ALTER TABLE review_outputs RENAME TO review_outputs_legacy;
+          DROP INDEX IF EXISTS idx_review_outputs_job;
+          DROP INDEX IF EXISTS idx_review_outputs_job_order;
+          CREATE TABLE review_outputs (
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            label TEXT NOT NULL,
+            url TEXT,
+            text TEXT NOT NULL,
+            order_index INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          );
+          INSERT INTO review_outputs (id, job_id, user_id, label, url, text, order_index, created_at, updated_at)
+          SELECT job_id || ':' || rowid, job_id, user_id, label, url, text, rowid - 1, created_at, updated_at
+          FROM review_outputs_legacy;
+          DROP TABLE review_outputs_legacy;
+          CREATE INDEX IF NOT EXISTS idx_review_outputs_job ON review_outputs(job_id, updated_at);
+          CREATE INDEX IF NOT EXISTS idx_review_outputs_job_order ON review_outputs(job_id, order_index, created_at);
+        `);
+      });
+      tx();
+      return;
+    }
+    if (!columnNames.has("order_index")) {
+      db.exec(`
+        ALTER TABLE review_outputs ADD COLUMN order_index INTEGER NOT NULL DEFAULT 0;
+      `);
+    }
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_review_outputs_job ON review_outputs(job_id, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_review_outputs_job_order ON review_outputs(job_id, order_index, created_at);
+    `);
+  }
+
+  migrateReviewOutputsSchema();
+
+  function saveReviewOutput(output) {
+    const now = new Date().toISOString();
+    const jobId = String(output.jobId || "");
+    const label = String(output.label || "文件");
+    const orderIndex = Number.isFinite(Number(output.orderIndex)) ? Number(output.orderIndex) : 0;
+    const id = String(output.id || `${jobId}:${label}:${orderIndex}`);
+    db.prepare(`
+      INSERT INTO review_outputs (id, job_id, user_id, label, url, text, order_index, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        job_id = excluded.job_id,
+        user_id = excluded.user_id,
+        label = excluded.label,
+        url = excluded.url,
+        text = excluded.text,
+        order_index = excluded.order_index,
+        updated_at = excluded.updated_at
+    `).run(
+      id,
+      jobId,
+      output.userId,
+      label,
+      output.url || null,
+      String(output.text || ""),
+      orderIndex,
+      output.createdAt || now,
+      output.updatedAt || now
+    );
+  }
+
+  function listReviewOutputs(jobId) {
+    const rows = db.prepare(`
+      SELECT id, job_id, user_id, label, url, text, order_index, created_at, updated_at
+      FROM review_outputs
+      WHERE job_id = ?
+      ORDER BY order_index, created_at, rowid
+    `).all(jobId);
+    return rows.map((row) => ({
+      id: row.id,
+      jobId: row.job_id,
+      userId: row.user_id,
+      label: row.label,
+      url: row.url || "",
+      text: row.text || "",
+      orderIndex: row.order_index,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    }));
+  }
+
+  function updateReviewOutputUrl(jobId, id, url) {
+    db.prepare(`
+      UPDATE review_outputs
+      SET url = ?, updated_at = ?
+      WHERE job_id = ? AND id = ?
+    `).run(url || null, new Date().toISOString(), jobId, id);
+  }
+
+  function deleteReviewOutputs(jobId) {
+    db.prepare("DELETE FROM review_outputs WHERE job_id = ?").run(jobId);
+  }
+
+  function jobPayloadForStorage(job) {
+    const { reviewOutputs, ...payload } = job || {};
+    return payload;
+  }
+
   function saveJob(job) {
     db.prepare(`
       INSERT INTO jobs (id, user_id, status, order_index, created_at, updated_at, payload)
@@ -132,12 +301,16 @@ export function createStore({ sqliteFile, usersFile }) {
       Number(job.order) || 0,
       job.createdAt || new Date().toISOString(),
       job.updatedAt || new Date().toISOString(),
-      JSON.stringify(job)
+      JSON.stringify(jobPayloadForStorage(job))
     );
   }
 
   function deleteJob(jobId) {
-    db.prepare("DELETE FROM jobs WHERE id = ?").run(jobId);
+    const tx = db.transaction(() => {
+      db.prepare("DELETE FROM review_outputs WHERE job_id = ?").run(jobId);
+      db.prepare("DELETE FROM jobs WHERE id = ?").run(jobId);
+    });
+    tx();
   }
 
   function loadJobs() {
@@ -147,6 +320,23 @@ export function createStore({ sqliteFile, usersFile }) {
       try {
         const job = JSON.parse(row.payload);
         if (!job?.id || !job?.userId) continue;
+        if (Array.isArray(job.reviewOutputs) && job.reviewOutputs.length) {
+          for (const [index, output] of job.reviewOutputs.entries()) {
+            saveReviewOutput({
+              id: output.id || output.reviewOutputId || `${job.id}:legacy:${index}`,
+              jobId: job.id,
+              userId: job.userId,
+              label: output.label,
+              url: output.url,
+              text: output.text,
+              orderIndex: index,
+              createdAt: job.createdAt,
+              updatedAt: job.updatedAt
+            });
+          }
+          delete job.reviewOutputs;
+          saveJob(job);
+        }
         if (job.status === "running") {
           job.status = "error";
           job.step = "服务重启后暂停";
@@ -195,6 +385,26 @@ export function createStore({ sqliteFile, usersFile }) {
 
   function getUserSettings(userId) {
     const row = db.prepare("SELECT payload, updated_at FROM user_settings WHERE user_id = ?").get(userId);
+    if (!row?.payload) return null;
+    try {
+      return { ...JSON.parse(row.payload), updatedAt: row.updated_at };
+    } catch {
+      return null;
+    }
+  }
+
+  function saveAppSetting(key, payload) {
+    db.prepare(`
+      INSERT INTO app_settings (key, payload, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET
+        payload = excluded.payload,
+        updated_at = excluded.updated_at
+    `).run(key, JSON.stringify(payload || {}), new Date().toISOString());
+  }
+
+  function getAppSetting(key) {
+    const row = db.prepare("SELECT payload, updated_at FROM app_settings WHERE key = ?").get(key);
     if (!row?.payload) return null;
     try {
       return { ...JSON.parse(row.payload), updatedAt: row.updated_at };
@@ -268,6 +478,177 @@ export function createStore({ sqliteFile, usersFile }) {
 
   function deleteTemplate(userId, templateId) {
     return db.prepare("DELETE FROM extra_doc_templates WHERE user_id = ? AND id = ?").run(userId, templateId).changes;
+  }
+
+  function rowToRulePack(row) {
+    return {
+      id: row.id,
+      name: row.name,
+      version: row.version,
+      markdown: row.markdown,
+      summary: row.summary_json ? JSON.parse(row.summary_json) : null,
+      active: Boolean(row.active),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
+  }
+
+  function listReviewRulePacks() {
+    return db.prepare(`
+      SELECT * FROM review_rule_packs
+      ORDER BY active DESC, updated_at DESC, created_at DESC
+    `).all().map(rowToRulePack);
+  }
+
+  function getActiveReviewRulePack() {
+    const row = db.prepare(`
+      SELECT * FROM review_rule_packs
+      WHERE active = 1
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `).get();
+    return row ? rowToRulePack(row) : null;
+  }
+
+  function saveReviewRulePack(rulePack) {
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO review_rule_packs (id, name, version, markdown, summary_json, active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        version = excluded.version,
+        markdown = excluded.markdown,
+        summary_json = excluded.summary_json,
+        updated_at = excluded.updated_at
+    `).run(
+      rulePack.id,
+      rulePack.name,
+      rulePack.version,
+      rulePack.markdown,
+      rulePack.summary ? JSON.stringify(rulePack.summary) : null,
+      rulePack.active ? 1 : 0,
+      rulePack.createdAt || now,
+      rulePack.updatedAt || now
+    );
+  }
+
+  function activateReviewRulePack(rulePackId) {
+    const tx = db.transaction(() => {
+      db.prepare("UPDATE review_rule_packs SET active = 0, updated_at = ?").run(new Date().toISOString());
+      return db.prepare("UPDATE review_rule_packs SET active = 1, updated_at = ? WHERE id = ?").run(new Date().toISOString(), rulePackId).changes;
+    });
+    return tx();
+  }
+
+  function rowToReviewRun(row) {
+    return {
+      id: row.id,
+      jobId: row.job_id,
+      userId: row.user_id,
+      status: row.status,
+      riskLevel: row.risk_level,
+      action: row.action,
+      model: row.model,
+      rulePackId: row.rule_pack_id,
+      rulePackVersion: row.rule_pack_version,
+      result: row.result_json ? JSON.parse(row.result_json) : null,
+      error: row.error || "",
+      locked: Boolean(row.locked),
+      overridden: Boolean(row.overridden),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
+  }
+
+  function saveReviewRun(run) {
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO review_runs (
+        id, job_id, user_id, status, risk_level, action, model, rule_pack_id,
+        rule_pack_version, result_json, error, locked, overridden, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        status = excluded.status,
+        risk_level = excluded.risk_level,
+        action = excluded.action,
+        model = excluded.model,
+        rule_pack_id = excluded.rule_pack_id,
+        rule_pack_version = excluded.rule_pack_version,
+        result_json = excluded.result_json,
+        error = excluded.error,
+        locked = excluded.locked,
+        overridden = excluded.overridden,
+        updated_at = excluded.updated_at
+    `).run(
+      run.id,
+      run.jobId,
+      run.userId,
+      run.status,
+      run.riskLevel || "none",
+      run.action || "pass",
+      run.model || null,
+      run.rulePackId || null,
+      run.rulePackVersion || null,
+      run.result ? JSON.stringify(run.result) : null,
+      run.error || null,
+      run.locked ? 1 : 0,
+      run.overridden ? 1 : 0,
+      run.createdAt || now,
+      run.updatedAt || now
+    );
+  }
+
+  function getLatestReviewRunForJob(jobId) {
+    const row = db.prepare(`
+      SELECT * FROM review_runs
+      WHERE job_id = ?
+      ORDER BY updated_at DESC, created_at DESC
+      LIMIT 1
+    `).get(jobId);
+    return row ? rowToReviewRun(row) : null;
+  }
+
+  function listReviewRuns({ status = "", locked = null, limit = 100, offset = 0 } = {}) {
+    const clauses = [];
+    const params = [];
+    if (status) {
+      clauses.push("r.status = ?");
+      params.push(status);
+    }
+    if (locked != null) {
+      clauses.push("r.locked = ?");
+      params.push(locked ? 1 : 0);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const rows = db.prepare(`
+      SELECT r.*, u.username
+      FROM review_runs r
+      LEFT JOIN users u ON u.id = r.user_id
+      ${where}
+      ORDER BY r.updated_at DESC
+      LIMIT ? OFFSET ?
+    `).all(...params, limit, offset);
+    return rows.map((row) => ({ ...rowToReviewRun(row), username: row.username || "" }));
+  }
+
+  function saveReviewOverride(override) {
+    db.prepare(`
+      INSERT INTO review_overrides (
+        id, job_id, review_run_id, admin_user_id, admin_username, reason, snapshot_json, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      override.id,
+      override.jobId,
+      override.reviewRunId || null,
+      override.adminUserId,
+      override.adminUsername,
+      override.reason,
+      override.snapshot ? JSON.stringify(override.snapshot) : null,
+      override.createdAt || new Date().toISOString()
+    );
   }
 
   function usageRecords(userId, { start, end, limit = 100, offset = 0 } = {}) {
@@ -463,21 +844,35 @@ export function createStore({ sqliteFile, usersFile }) {
   return {
     adminUsageRecords,
     adminUsageSummary,
+    activateReviewRulePack,
     close: () => db.close(),
     deleteJob,
+    deleteReviewOutputs,
     getNetdiskAccount,
+    getActiveReviewRulePack,
+    getAppSetting,
+    getLatestReviewRunForJob,
     getUserSettings,
     deleteTemplate,
     listTemplates,
+    listReviewOutputs,
+    listReviewRulePacks,
+    listReviewRuns,
     loadJobs,
     loadUsers,
+    saveAppSetting,
     saveNetdiskAccount,
     saveJob,
+    saveReviewOutput,
+    saveReviewOverride,
+    saveReviewRulePack,
+    saveReviewRun,
     saveTemplate,
     saveUsageRecord,
     saveUserSettings,
     saveUser,
     usageRecords,
-    usageSummary
+    usageSummary,
+    updateReviewOutputUrl
   };
 }

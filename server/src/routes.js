@@ -9,6 +9,15 @@ import { publicUsageRecord, usageDateRange } from "./services/usage.js";
 import { testLlmConnection } from "./services/ai.js";
 import { normalizeUserSettings, settingsFromUserConfig } from "./services/settings.js";
 import { DEFAULT_EXTRA_DOC_TEMPLATES } from "./defaults/templates.js";
+import {
+  normalizeReviewConfig,
+  parseRulePackMarkdown,
+  publicReviewConfig,
+  publicReviewRun,
+  publicRulePack,
+  runDocumentReview,
+  testReviewConfig
+} from "./services/review.js";
 
 export function registerRoutes(app, ctx) {
   const {
@@ -65,6 +74,34 @@ export function registerRoutes(app, ctx) {
       userId: record.userId,
       username: record.username || ""
     };
+  }
+
+  function isReviewEnabled(userId) {
+    return Boolean(store.getUserSettings(userId)?.reviewEnabled);
+  }
+
+  function getReviewConfig() {
+    return normalizeReviewConfig(store.getAppSetting("reviewConfig") || {});
+  }
+
+  function isReviewLocked(job) {
+    if (!isReviewEnabled(job.userId)) return false;
+    const run = store.getLatestReviewRunForJob(job.id);
+    return Boolean(run?.locked && !run?.overridden);
+  }
+
+  function storedOutputFilePath(file) {
+    const urlPath = decodeURIComponent(file?.url || "").replace(/^\/outputs\//, "");
+    if (!urlPath) return "";
+    return path.join(OUTPUT_DIR, path.basename(urlPath));
+  }
+
+  function syncJobReviewFromRun(job, run) {
+    job.reviewStatus = run.status;
+    job.reviewRiskLevel = run.riskLevel;
+    job.reviewLocked = Boolean(run.locked && !run.overridden);
+    job.reviewRunId = run.id;
+    store.saveJob(job);
   }
 
   async function commandExists(command) {
@@ -177,7 +214,9 @@ export function registerRoutes(app, ctx) {
   });
 
   app.put("/api/config", requireAuth, (req, res) => {
+    const existing = normalizeUserSettings(store.getUserSettings(req.user.id) || {});
     const config = normalizeUserSettings(req.body?.config || req.body || {});
+    config.reviewEnabled = existing.reviewEnabled;
     config.updatedAt = new Date().toISOString();
     store.saveUserSettings(req.user.id, config);
     res.json({ ok: true, config });
@@ -294,6 +333,7 @@ export function registerRoutes(app, ctx) {
         username: user.username,
         provider: user.provider || "password",
         isAdmin: isAdmin(user),
+        reviewEnabled: isReviewEnabled(user.id),
         createdAt: user.createdAt,
         jobs: jobCountsForUser(user.id),
         usage: usageByUser.get(user.id) || {
@@ -304,6 +344,15 @@ export function registerRoutes(app, ctx) {
         }
       })).sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
     });
+  });
+
+  app.patch("/api/admin/users/:id/review-entitlement", requireAdmin, (req, res) => {
+    const user = users.find((item) => item.id === req.params.id);
+    if (!user) return res.status(404).json({ error: "账号不存在。" });
+    const existing = normalizeUserSettings(store.getUserSettings(user.id) || {});
+    const next = { ...existing, reviewEnabled: Boolean(req.body?.reviewEnabled), updatedAt: new Date().toISOString() };
+    store.saveUserSettings(user.id, next);
+    res.json({ ok: true, user: { ...publicUser(user), reviewEnabled: next.reviewEnabled } });
   });
 
   app.patch("/api/admin/users/:id/password", requireAdmin, (req, res) => {
@@ -336,8 +385,103 @@ export function registerRoutes(app, ctx) {
     res.json({ range: dateRange.range, page, pageSize, records: records.map(publicAdminUsageRecord) });
   });
 
+  app.get("/api/admin/review/rule-packs", requireAdmin, (_req, res) => {
+    res.json({ rulePacks: store.listReviewRulePacks().map((item) => publicRulePack(item, true)) });
+  });
+
+  app.post("/api/admin/review/rule-packs/import", requireAdmin, (req, res) => {
+    const markdown = String(req.body?.markdown || "").trim();
+    if (!markdown) return res.status(400).json({ error: "请粘贴 Markdown 规则包。" });
+    const summary = parseRulePackMarkdown(markdown);
+    const name = String(req.body?.name || summary.name || "企业审查规则包").trim().slice(0, 80);
+    const version = String(req.body?.version || summary.version || new Date().toISOString().slice(0, 10)).trim().slice(0, 40);
+    const rulePack = {
+      id: nanoid(16),
+      name,
+      version,
+      markdown,
+      summary,
+      active: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    store.saveReviewRulePack(rulePack);
+    res.json({ rulePack: publicRulePack(rulePack, true) });
+  });
+
+  app.post("/api/admin/review/rule-packs/:id/activate", requireAdmin, (req, res) => {
+    const changed = store.activateReviewRulePack(req.params.id);
+    if (!changed) return res.status(404).json({ error: "规则包不存在。" });
+    res.json({ ok: true, rulePacks: store.listReviewRulePacks().map((item) => publicRulePack(item, true)) });
+  });
+
+  app.get("/api/admin/review/config", requireAdmin, (_req, res) => {
+    res.json({ config: publicReviewConfig(getReviewConfig()) });
+  });
+
+  app.put("/api/admin/review/config", requireAdmin, (req, res) => {
+    const existing = getReviewConfig();
+    const incoming = req.body?.config || req.body || {};
+    const config = normalizeReviewConfig({
+      ...existing,
+      ...incoming,
+      apiKey: incoming.apiKey === "configured" || incoming.apiKey === "••••••••••••" ? existing.apiKey : incoming.apiKey,
+      updatedAt: new Date().toISOString()
+    });
+    store.saveAppSetting("reviewConfig", config);
+    res.json({ ok: true, config: publicReviewConfig(config) });
+  });
+
+  app.post("/api/admin/review/config/test", requireAdmin, async (req, res) => {
+    try {
+      const existing = getReviewConfig();
+      const incoming = req.body?.config || req.body || {};
+      const config = normalizeReviewConfig({
+        ...existing,
+        ...incoming,
+        apiKey: incoming.apiKey === "configured" || incoming.apiKey === "••••••••••••" ? existing.apiKey : incoming.apiKey
+      });
+      const result = await testReviewConfig(config);
+      res.json({ ok: true, model: result.model });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err.message || "审查模型连接失败。" });
+    }
+  });
+
+  app.get("/api/admin/reviews", requireAdmin, (req, res) => {
+    const locked = req.query.locked == null ? null : String(req.query.locked) === "true";
+    const runs = store.listReviewRuns({ locked, limit: 200, offset: 0 });
+    res.json({ reviews: runs.map(publicReviewRun) });
+  });
+
+  app.post("/api/admin/reviews/:jobId/override", requireAdmin, (req, res) => {
+    const job = jobs.get(req.params.jobId);
+    if (!job) return res.status(404).json({ error: "任务不存在。" });
+    const reason = String(req.body?.reason || "").trim();
+    if (reason.length < 4) return res.status(400).json({ error: "请填写至少 4 个字的放行理由。" });
+    const run = store.getLatestReviewRunForJob(job.id);
+    if (!run) return res.status(404).json({ error: "该任务没有审查记录。" });
+    run.locked = false;
+    run.overridden = true;
+    run.updatedAt = new Date().toISOString();
+    store.saveReviewRun(run);
+    store.saveReviewOverride({
+      id: nanoid(16),
+      jobId: job.id,
+      reviewRunId: run.id,
+      adminUserId: req.user.id,
+      adminUsername: req.user.username,
+      reason,
+      snapshot: run,
+      createdAt: new Date().toISOString()
+    });
+    syncJobReviewFromRun(job, run);
+    res.json({ ok: true, review: publicReviewRun(run), job: publicJob(job) });
+  });
+
   app.post("/api/jobs", requireAuth, (req, res) => {
     const { links = [], prompt = defaultPrompt, extraPrompts = [], settings = {}, concurrency = 5 } = req.body || {};
+    const formatRequirement = String(req.body?.formatRequirement || "").trim().slice(0, 12000);
     const savedConfig = store.getUserSettings(req.user.id);
     if (!savedConfig) return res.status(400).json({ error: "请先到“模型配置”保存当前账号的模型配置。" });
     const effectiveSettings = savedConfig
@@ -367,6 +511,7 @@ export function registerRoutes(app, ctx) {
         order: nextOrder + index,
         prompt,
         extraPrompts,
+        formatRequirement,
         settings: effectiveSettings,
         userId: req.user.id,
         status: "queued",
@@ -502,6 +647,44 @@ export function registerRoutes(app, ctx) {
     res.json({ job: publicJob(job) });
   });
 
+  app.get("/api/jobs/:id/review", requireAuth, (req, res) => {
+    const job = jobs.get(req.params.id);
+    if (!job || job.userId !== req.user.id) return res.status(404).json({ error: "not found" });
+    if (!isReviewEnabled(req.user.id)) return res.status(404).json({ error: "当前账号未启用审查服务。" });
+    res.json({ review: publicReviewRun(store.getLatestReviewRunForJob(job.id)) });
+  });
+
+  app.post("/api/jobs/:id/review/retry", requireAuth, async (req, res) => {
+    const job = jobs.get(req.params.id);
+    if (!job || job.userId !== req.user.id) return res.status(404).json({ error: "not found" });
+    if (!isReviewEnabled(req.user.id)) return res.status(404).json({ error: "当前账号未启用审查服务。" });
+    if (job.status === "running" || job.status === "queued") return res.status(409).json({ error: "任务正在处理，暂不能重试审查。" });
+    try {
+      const run = await runDocumentReview({
+        job,
+        rulePack: store.getActiveReviewRulePack(),
+        config: getReviewConfig(),
+        store
+      });
+      syncJobReviewFromRun(job, run);
+      res.json({ ok: true, review: publicReviewRun(run), job: publicJob(job) });
+    } catch (err) {
+      const run = store.getLatestReviewRunForJob(job.id);
+      res.status(500).json({ error: err.message || "审查失败。", review: publicReviewRun(run) });
+    }
+  });
+
+  app.get("/api/jobs/:id/download/:index", requireAuth, (req, res) => {
+    const job = jobs.get(req.params.id);
+    if (!job || job.userId !== req.user.id) return res.status(404).json({ error: "not found" });
+    if (isReviewLocked(job)) return res.status(423).json({ error: "高风险审查未放行，暂不能下载。" });
+    const index = Number.parseInt(String(req.params.index || "0"), 10) || 0;
+    const file = (job.outputFiles || [])[index];
+    const filePath = storedOutputFilePath(file);
+    if (!filePath || !fs.existsSync(filePath)) return res.status(404).json({ error: "文件不存在。" });
+    res.download(filePath, `${String(job.order + 1).padStart(2, "0")}_${safeName(job.outputBaseTitle || job.title)}_${safeName(file.label)}.docx`);
+  });
+
   app.post("/api/jobs/:id/retry-extra", requireAuth, (req, res) => {
     const job = jobs.get(req.params.id);
     if (!job || job.userId !== req.user.id) return res.status(404).json({ error: "not found" });
@@ -560,6 +743,7 @@ export function registerRoutes(app, ctx) {
       .filter((job) => job.userId === req.user.id);
     const files = [];
     for (const job of selectedJobs) {
+      if (isReviewLocked(job)) continue;
       for (const output of job.outputFiles || []) {
         const urlPath = decodeURIComponent(output.url || "").replace(/^\/outputs\//, "");
         const filePath = path.join(OUTPUT_DIR, path.basename(urlPath));

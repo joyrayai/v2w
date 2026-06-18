@@ -868,6 +868,28 @@ textarea { resize: vertical; min-height: 92px; line-height: 1.5; }
 .templateModal textarea {
   min-height: 150px;
 }
+.modalHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.modalHead h2 { margin: 0 0 6px; font-size: 20px; }
+.modalHead p { margin: 0; color: var(--ink-2); font-size: 13px; }
+.iconBtn {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid rgba(120,150,230,.26);
+  background: rgba(255,255,255,.78);
+  color: var(--ink-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.iconBtn:hover { color: var(--ink); border-color: rgba(47,107,255,.34); }
 .modalActions {
   display: flex;
   justify-content: flex-end;
@@ -891,6 +913,31 @@ textarea { resize: vertical; min-height: 92px; line-height: 1.5; }
   background: rgba(255,255,255,.72);
 }
 .checkLine input { width: 16px; height: 16px; flex-shrink: 0; accent-color: var(--accent); }
+.formatPanel { overflow: hidden; }
+.formatHead { margin-bottom: 0; align-items: center; }
+.formatToggle { flex-shrink: 0; }
+.formatBody {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: grid-template-rows .22s ease, opacity .18s ease, transform .22s ease, margin-top .22s ease;
+  margin-top: 0;
+}
+.formatBody.open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translateY(0);
+  margin-top: 16px;
+}
+.formatBody > .field {
+  overflow: hidden;
+  margin-bottom: 0;
+}
+.formatBody textarea {
+  min-height: 108px;
+  resize: vertical;
+}
 
 .notice, .queuePaused {
   display: flex;
@@ -983,8 +1030,11 @@ textarea { resize: vertical; min-height: 92px; line-height: 1.5; }
   font-size: 12px;
   line-height: 1.2;
 }
-.downloadStat, .usageStat { font-size: 12.5px; line-height: 1.45; color: var(--accent); }
+.downloadStat, .usageStat, .reviewStat { font-size: 12.5px; line-height: 1.45; color: var(--accent); }
 .usageStat { color: var(--ink-2); margin-top: 1px; }
+.reviewStat { display: inline-flex; align-items: center; gap: 6px; color: var(--green); }
+.reviewStat.medium { color: #b7791f; }
+.reviewStat.high, .reviewStat.locked, .reviewStat.error { color: var(--red); }
 .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--ink-3); }
 .dot.run { background: var(--accent); box-shadow: 0 0 0 3px rgba(47,107,255,.16); animation: pulse 1.4s ease-in-out infinite; }
 .dot.done { background: var(--green); }
@@ -1070,8 +1120,8 @@ textarea { resize: vertical; min-height: 92px; line-height: 1.5; }
 .barPct { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--ink-3); text-align: right; }
 .downloads { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .chip {
-  min-height: 32px;
   border: 1px solid rgba(59,99,246,.2);
+  min-height: 32px;
   border-radius: 999px;
   padding: 0 12px;
   display: inline-flex;
@@ -1084,22 +1134,30 @@ textarea { resize: vertical; min-height: 92px; line-height: 1.5; }
   font-weight: 550;
   white-space: nowrap;
   transition: background .16s ease, border-color .16s ease, transform .16s ease, box-shadow .16s ease;
+  cursor: pointer;
 }
-.chip:hover {
+.chip:hover:not(:disabled) {
   background: rgba(59,99,246,.14);
   border-color: rgba(59,99,246,.4);
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(59,99,246,.16);
 }
-.chip.ghost:hover {
+.chip.ghost:hover:not(:disabled) {
   background: rgba(226,59,70,.12);
   border-color: rgba(226,59,70,.36);
   box-shadow: 0 4px 12px rgba(226,59,70,.14);
 }
-.chip.retry:hover {
+.chip.retry:hover:not(:disabled) {
   background: rgba(34,197,94,.16);
   border-color: rgba(34,197,94,.4);
   box-shadow: 0 4px 12px rgba(34,197,94,.16);
+}
+.chip:disabled,
+.chip.disabled {
+  opacity: .55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
 }
 .chip.ghost { color: var(--red); background: rgba(226,59,70,.07); border-color: rgba(226,59,70,.18); }
 .chip.retry {
@@ -1107,6 +1165,29 @@ textarea { resize: vertical; min-height: 92px; line-height: 1.5; }
   background: rgba(34,197,94,.1);
   border-color: rgba(34,197,94,.22);
 }
+.chip.inspect {
+  color: #355075;
+  background: rgba(100,116,139,.08);
+  border-color: rgba(100,116,139,.2);
+}
+.reviewModal { width: min(720px, 100%); }
+.reviewFiles { display: grid; gap: 12px; max-height: min(62vh, 620px); overflow: auto; }
+.reviewFile {
+  display: grid;
+  gap: 8px;
+  border: 1px solid rgba(150,170,210,.24);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: rgba(255,255,255,.72);
+}
+.reviewFile header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.reviewFile header span { font-size: 12px; color: var(--ink-2); }
+.reviewFile p { margin: 0; color: var(--ink-2); font-size: 13px; line-height: 1.55; }
+.reviewFile ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.reviewFile li { font-size: 13px; color: var(--ink-2); line-height: 1.5; }
+.reviewFile li b { color: var(--ink); margin-right: 6px; }
+.reviewFile.risk-high { border-color: rgba(226,59,70,.28); background: rgba(226,59,70,.04); }
+.reviewFile.risk-medium { border-color: rgba(180,120,20,.26); background: rgba(245,158,11,.05); }
 
 .usagePanel { display: grid; gap: 16px; }
 .usageRange {
@@ -1237,7 +1318,7 @@ textarea { resize: vertical; min-height: 92px; line-height: 1.5; }
 }
 .adminUsersTable .usageTableHead,
 .adminUsersTable .usageTableRow {
-  grid-template-columns: minmax(160px, 1.1fr) 90px minmax(180px, 1fr) minmax(280px, 1.5fr) 180px;
+  grid-template-columns: minmax(160px, 1.1fr) 90px minmax(180px, 1fr) minmax(280px, 1.5fr) 90px 180px;
 }
 .adminUsageUsers .usageTableHead,
 .adminUsageUsers .usageTableRow {
@@ -1260,6 +1341,60 @@ textarea { resize: vertical; min-height: 92px; line-height: 1.5; }
   font-size: 13px;
   white-space: nowrap;
   align-self: center;
+}
+.miniSwitch {
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(120,150,230,.24);
+  background: rgba(255,255,255,.78);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.miniSwitch.on {
+  color: var(--accent);
+  border-color: rgba(47,107,255,.32);
+  background: rgba(47,107,255,.08);
+}
+.miniSwitch.danger {
+  color: #fff;
+  border-color: rgba(226,59,70,.28);
+  background: rgba(226,59,70,.74);
+}
+.miniSwitch:disabled {
+  opacity: .65;
+  cursor: default;
+}
+.adminReviewGrid { display: grid; gap: 14px; }
+.adminReviewForm {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(160px, .6fr) auto;
+  gap: 12px;
+  align-items: end;
+  padding: 14px;
+}
+.adminReviewForm .field { margin-bottom: 0; }
+.adminReviewForm .full { grid-column: 1 / -1; }
+.adminReviewForm textarea { min-height: 180px; }
+.adminReviewActions { display: flex; gap: 10px; align-items: center; }
+.adminRuleTable .usageTableHead,
+.adminRuleTable .usageTableRow {
+  grid-template-columns: minmax(180px, 1.4fr) 100px 90px 180px 80px;
+}
+.adminReviewRuns .usageTableHead,
+.adminReviewRuns .usageTableRow {
+  grid-template-columns: minmax(160px, 1fr) 80px 80px minmax(130px, .8fr) minmax(260px, 1.4fr) 70px;
+}
+.inlineInput {
+  width: 100%;
+  min-height: 32px;
+  border: 1px solid rgba(120,150,230,.24);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: rgba(255,255,255,.86);
+  color: var(--ink);
 }
 
 .mcTabs {

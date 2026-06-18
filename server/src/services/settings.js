@@ -32,6 +32,7 @@ export function normalizeUserSettings(payload = {}) {
   return {
     provider,
     oss: normalizeOssConfig(payload.oss || payload.ossState || {}),
+    reviewEnabled: Boolean(payload.reviewEnabled),
     updatedAt: payload.updatedAt || null
   };
 }

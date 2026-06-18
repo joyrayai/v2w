@@ -80,7 +80,7 @@ function usageMeta(json, settings) {
   };
 }
 
-async function chatCompletion(messages, settings, temperature = 0.2) {
+export async function chatCompletion(messages, settings, temperature = 0.2, extraBody = {}) {
   const apiKey = settings.llmApiKey || settings.dashscopeApiKey;
   if (!apiKey) throw new Error("缺少模型 API Key。");
   const baseUrl = (settings.llmBaseUrl || "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/+$/, "");
@@ -93,7 +93,8 @@ async function chatCompletion(messages, settings, temperature = 0.2) {
     body: JSON.stringify({
       model: String(settings.qwenModel || "").trim(),
       messages,
-      temperature
+      temperature,
+      ...extraBody
     })
   });
   const json = await res.json();

@@ -51,6 +51,10 @@ import { downloadQuarkShare, getQuarkAccount, loginQuark as loginQuarkAccount } 
 import { downloadBilibili, isBilibiliUrl } from "./services/downloaders/bilibili.js";
 import { normalizeUsageRecord, summarizeJobUsage } from "./services/usage.js";
 import { createBaiduQrLoginManager } from "./services/baidu-qr-login.js";
+import {
+  publicReviewRun,
+  runDocumentReview
+} from "./services/review.js";
 
 const require = createRequire(import.meta.url);
 const archiverModule = require("archiver");
@@ -59,7 +63,6 @@ ensureDataDirs();
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
-app.use("/outputs", express.static(OUTPUT_DIR));
 app.use("/temp-media", express.static(AUDIO_DIR, {
   setHeaders(res) {
     res.setHeader("Cache-Control", "no-store");
@@ -397,12 +400,38 @@ function updateDownloadStats(job, patch = {}) {
   });
 }
 
+function isReviewEnabledForUser(userId) {
+  return Boolean(store.getUserSettings(userId)?.reviewEnabled);
+}
+
+function latestPublicReview(job) {
+  if (!job?.id || !isReviewEnabledForUser(job.userId)) return null;
+  return publicReviewRun(store.getLatestReviewRunForJob(job.id));
+}
+
+function publicOutputFiles(job) {
+  return (job.outputFiles || []).map((file, index) => ({
+    ...file,
+    url: `/api/jobs/${encodeURIComponent(job.id)}/download/${index}`
+  }));
+}
+
 function publicJob(job) {
-  const { settings, prompt, rawText, ...rest } = job;
+  const { settings, prompt, formatRequirement, rawText, reviewOutputs, ...rest } = job;
   const usageSummary = Array.isArray(job.usageRecords)
     ? summarizeJobUsage(job.usageRecords)
     : job.usageSummary;
-  return { ...rest, usageSummary, errorSummary: summarizeError(job.error) };
+  const review = latestPublicReview(job);
+  return {
+    ...rest,
+    outputFiles: publicOutputFiles(job),
+    outputUrl: job.outputFiles?.length ? `/api/jobs/${encodeURIComponent(job.id)}/download/0` : rest.outputUrl,
+    usageSummary,
+    review,
+    reviewEnabled: isReviewEnabledForUser(job.userId),
+    reviewLocked: Boolean(review?.locked && !review?.overridden),
+    errorSummary: summarizeError(job.error)
+  };
 }
 
 function recordUsage(job, record) {
@@ -971,6 +1000,36 @@ function fileExistsForLabel(files = [], label) {
   return files.some((file) => String(file?.label || "").trim() === target && fs.existsSync(outputFilePath(file)));
 }
 
+function reviewOutputIdForExtra(index) {
+  return `extra-${Number(index) || 0}`;
+}
+
+function fileExistsForReviewOutput(files = [], reviewOutputId) {
+  const target = String(reviewOutputId || "").trim();
+  return files.some((file) => String(file?.reviewOutputId || "").trim() === target && fs.existsSync(outputFilePath(file)));
+}
+
+function setReviewOutput(job, id, label, url, text, orderIndex = 0) {
+  if (!job?.id || !job?.userId) return;
+  store.saveReviewOutput({
+    id,
+    jobId: job.id,
+    userId: job.userId,
+    label: String(label || "文件"),
+    url,
+    text: String(text || ""),
+    orderIndex
+  });
+}
+
+function syncReviewOutputUrls(job, files = []) {
+  if (!job?.id) return;
+  for (const file of files) {
+    if (!file?.reviewOutputId) continue;
+    store.updateReviewOutputUrl(job.id, file.reviewOutputId, file.url || "");
+  }
+}
+
 function promptWithFormatRequirement(prompt, formatRequirement) {
   const basePrompt = String(prompt || "").trim();
   const formatText = String(formatRequirement || "").trim();
@@ -1004,6 +1063,25 @@ function promptWithFormatRequirement(prompt, formatRequirement) {
   ].filter(Boolean).join("\n");
 }
 
+function activeReviewConfig() {
+  return store.getAppSetting("reviewConfig") || {};
+}
+
+async function reviewJobIfEnabled(job) {
+  if (!isReviewEnabledForUser(job.userId)) return null;
+  updatePhase(job, jobPhaseTotal(job), "审查生成文档", 100, 40);
+  const rulePack = store.getActiveReviewRulePack();
+  const config = activeReviewConfig();
+  const run = await runDocumentReview({ job, rulePack, config, store });
+  update(job, {
+    reviewStatus: run.status,
+    reviewRiskLevel: run.riskLevel,
+    reviewLocked: Boolean(run.locked && !run.overridden),
+    reviewRunId: run.id
+  });
+  return run;
+}
+
 async function generateExtraFilesForJob(job, rawText, entries, options = {}) {
   const settings = options.settingsOverride || job.settings || {};
   const files = Array.isArray(job.outputFiles) ? [...job.outputFiles] : [];
@@ -1017,6 +1095,8 @@ async function generateExtraFilesForJob(job, rawText, entries, options = {}) {
     const item = entries[localIndex];
     const docLabel = item.title || `额外文档 ${item.index + 1}`;
     const itemFormatRequirement = item.formatEnabled ? String(item.formatRequirement || "").trim() : "";
+    const reviewOutputId = reviewOutputIdForExtra(item.index);
+    if (options.skipExisting && completedIndexes.has(item.index) && fileExistsForReviewOutput(files, reviewOutputId)) continue;
     if (options.skipExisting && completedIndexes.has(item.index) && fileExistsForLabel(files, docLabel)) continue;
     updatePhase(
       job,
@@ -1053,10 +1133,12 @@ async function generateExtraFilesForJob(job, rawText, entries, options = {}) {
         title: `${job.title} - ${docLabel}`,
         formatRequirement: itemFormatRequirement
       });
-      const fileEntry = { label: docLabel, url: `/outputs/${encodeURIComponent(output.fileName)}` };
-      const existingIndex = files.findIndex((file) => String(file.label || "") === docLabel);
+      const fileEntry = { label: docLabel, url: `/outputs/${encodeURIComponent(output.fileName)}`, reviewOutputId };
+      let existingIndex = files.findIndex((file) => String(file.reviewOutputId || "") === reviewOutputId);
+      if (existingIndex < 0) existingIndex = files.findIndex((file) => String(file.label || "") === docLabel);
       if (existingIndex >= 0) files[existingIndex] = fileEntry;
       else files.push(fileEntry);
+      setReviewOutput(job, reviewOutputId, docLabel, fileEntry.url, result.content, item.index + 1);
       generatedExtraOutputs.push({ label: docLabel, content: result.content });
       completedIndexes.add(item.index);
       update(job, {
@@ -1111,6 +1193,7 @@ async function smartRenameExtraOutputsIfNeeded(job, rawText, generatedExtraOutpu
     update(job, { phaseProgress: 100 });
     if (finalOutputBaseTitle) {
       const finalFiles = renameOutputFiles(job, job.outputFiles || [], finalOutputBaseTitle);
+      syncReviewOutputUrls(job, finalFiles);
       update(job, { outputBaseTitle: finalOutputBaseTitle, outputFiles: finalFiles, outputUrl: finalFiles[0]?.url });
       return finalFiles;
     }
@@ -1163,7 +1246,8 @@ async function processJob(job) {
   updatePhase(job, 3, "生成转写原文", 78, 70);
   const files = [];
   const rawOutput = await writeWord(job, rawText, { suffix: "原文", title: `${job.title} - 原文` });
-  files.push({ label: "原文", url: `/outputs/${encodeURIComponent(rawOutput.fileName)}` });
+  files.push({ label: "原文", url: `/outputs/${encodeURIComponent(rawOutput.fileName)}`, reviewOutputId: "raw" });
+  setReviewOutput(job, "raw", "原文", files[0].url, rawText, 0);
   update(job, { phaseProgress: 100 });
   update(job, {
     outputFiles: files,
@@ -1179,20 +1263,32 @@ async function processJob(job) {
     await smartRenameExtraOutputsIfNeeded(job, rawText, extraResult.generatedExtraOutputs, optionalWarnings);
   }
   const finalFiles = job.outputFiles || extraResult.files;
+  let reviewRun = null;
+  let reviewError = "";
+  try {
+    reviewRun = await reviewJobIfEnabled(job);
+  } catch (err) {
+    reviewError = `审查失败：${err.message}`;
+    update(job, { reviewStatus: "error", reviewError });
+  }
 
   markFinished(job, {
     status: "done",
-    step: extraResult.extraErrors.length ? "完成，部分额外文件失败" : "完成",
+    step: extraResult.extraErrors.length ? "完成，部分额外文件失败" : reviewRun?.locked ? "完成，高风险已锁定" : reviewError ? "完成，审查失败" : "完成",
     progress: 100,
     phaseIndex: jobPhaseTotal(job),
     phaseTotal: jobPhaseTotal(job),
     phaseProgress: 100,
     outputFiles: finalFiles,
     outputUrl: finalFiles[0]?.url,
-    error: [...extraResult.extraErrors, ...optionalWarnings].join("\n") || undefined,
+    error: [...extraResult.extraErrors, ...optionalWarnings, reviewError].filter(Boolean).join("\n") || undefined,
     completedExtraIndexes: extraResult.completedExtraIndexes,
     failedExtraIndexes: extraResult.failedExtraIndexes,
-    retryableExtraFailure: extraResult.extraErrors.length > 0
+    retryableExtraFailure: extraResult.extraErrors.length > 0,
+    reviewStatus: reviewRun?.status || job.reviewStatus,
+    reviewRiskLevel: reviewRun?.riskLevel || job.reviewRiskLevel,
+    reviewLocked: Boolean(reviewRun?.locked && !reviewRun?.overridden),
+    reviewRunId: reviewRun?.id || job.reviewRunId
   });
   if (extraResult.extraErrors.length) {
     pauseQueue(summarizeError(extraResult.extraErrors[0]) || "额外文件生成失败，已暂停后续任务。");
@@ -1225,19 +1321,31 @@ async function retryJobExtraDocs(job, retrySettings = {}) {
     await smartRenameExtraOutputsIfNeeded(job, job.rawText, extraResult.generatedExtraOutputs, optionalWarnings, settingsOverride);
   }
   const remainingFailed = extraResult.failedExtraIndexes;
+  let reviewRun = null;
+  let reviewError = "";
+  try {
+    reviewRun = await reviewJobIfEnabled(job);
+  } catch (err) {
+    reviewError = `审查失败：${err.message}`;
+    update(job, { reviewStatus: "error", reviewError });
+  }
   markFinished(job, {
     status: "done",
-    step: remainingFailed.length ? "完成，部分额外文件失败" : "完成",
+    step: remainingFailed.length ? "完成，部分额外文件失败" : reviewRun?.locked ? "完成，高风险已锁定" : reviewError ? "完成，审查失败" : "完成",
     progress: 100,
     phaseIndex: jobPhaseTotal(job),
     phaseTotal: jobPhaseTotal(job),
     phaseProgress: 100,
     outputFiles: job.outputFiles || extraResult.files,
     outputUrl: (job.outputFiles || extraResult.files)[0]?.url,
-    error: [...extraResult.extraErrors, ...optionalWarnings].join("\n") || undefined,
+    error: [...extraResult.extraErrors, ...optionalWarnings, reviewError].filter(Boolean).join("\n") || undefined,
     completedExtraIndexes: extraResult.completedExtraIndexes,
     failedExtraIndexes: remainingFailed,
-    retryableExtraFailure: remainingFailed.length > 0
+    retryableExtraFailure: remainingFailed.length > 0,
+    reviewStatus: reviewRun?.status || job.reviewStatus,
+    reviewRiskLevel: reviewRun?.riskLevel || job.reviewRiskLevel,
+    reviewLocked: Boolean(reviewRun?.locked && !reviewRun?.overridden),
+    reviewRunId: reviewRun?.id || job.reviewRunId
   });
   if (remainingFailed.length) {
     pauseQueue(summarizeError(extraResult.extraErrors[0]) || "额外文件生成失败，已暂停后续任务。");
@@ -1251,6 +1359,7 @@ async function retryJobExtraDocs(job, retrySettings = {}) {
 function requeueJob(job, settings = {}) {
   if (!job || job.status === "running" || job.status === "queued") throw new Error("任务正在处理，不能重复重试。");
   removeJobRuntimeFiles(job);
+  store.deleteReviewOutputs(job.id);
   update(job, {
     settings: { ...(job.settings || {}), ...settings },
     status: "queued",
@@ -1269,7 +1378,12 @@ function requeueJob(job, settings = {}) {
     mediaUrlType: "",
     audioPath: "",
     audioDurationSec: 0,
-    asrTaskId: ""
+    asrTaskId: "",
+    reviewStatus: "",
+    reviewRiskLevel: "",
+    reviewLocked: false,
+    reviewRunId: "",
+    reviewError: ""
   });
   queue.push(job);
   pumpQueue();

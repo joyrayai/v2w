@@ -38,6 +38,7 @@ export const APP_CONFIG = {
   maxUserRunning: boundedInt(process.env.MAX_USER_RUNNING, 2, 1, 5),
   maxUserQueued: boundedInt(process.env.MAX_USER_QUEUED, 50, 1, 200),
   minFreeDiskBytes: boundedInt(process.env.MIN_FREE_DISK_GB, 6, 1, 30) * GIB,
+  reviewContextLimitTokens: boundedInt(process.env.REVIEW_CONTEXT_LIMIT_TOKENS, 1000000, 10000, 2000000),
   cleanupIntervalMs: 24 * 60 * 60 * 1000
 };
 

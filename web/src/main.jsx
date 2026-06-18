@@ -4,8 +4,10 @@ import {
   ArrowDown,
   ArrowUp,
   Archive,
+  AlertTriangle,
   BarChart3,
   Download,
+  Eye,
   FileText,
   Folder,
   KeyRound,
@@ -17,8 +19,10 @@ import {
   QrCode,
   RefreshCw,
   Save,
+  ShieldCheck,
   Sparkles,
   Trash2,
+  Unlock,
   Users,
   UserRound,
   X
@@ -217,7 +221,9 @@ function defaultWorkDraft() {
   return {
     links: [{ title: "", link: "" }],
     bulkText: "",
-    docs: []
+    docs: [],
+    formatEnabled: false,
+    formatRequirement: ""
   };
 }
 
@@ -226,7 +232,9 @@ function normalizeWorkDraft(saved) {
   return {
     links: Array.isArray(saved?.links) && saved.links.length ? saved.links : defaults.links,
     bulkText: typeof saved?.bulkText === "string" ? saved.bulkText : defaults.bulkText,
-    docs: Array.isArray(saved?.docs) ? saved.docs : defaults.docs
+    docs: Array.isArray(saved?.docs) ? saved.docs : defaults.docs,
+    formatEnabled: Boolean(saved?.formatEnabled),
+    formatRequirement: typeof saved?.formatRequirement === "string" ? saved.formatRequirement : defaults.formatRequirement
   };
 }
 
@@ -295,6 +303,29 @@ function fileNameFromDisposition(header) {
   if (encoded) return decodeURIComponent(encoded);
   const plain = header?.match(/filename="?([^"]+)"?/i)?.[1];
   return plain || `video-to-word-${Date.now()}.zip`;
+}
+
+function saveBlobResponse(res, fallbackName = "download") {
+  return res.blob().then((blob) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileNameFromDisposition(res.headers.get("content-disposition")) || fallbackName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
+}
+
+async function readErrorResponse(res, fallback) {
+  const text = await res.text();
+  if (!text) return fallback;
+  try {
+    return JSON.parse(text).error || fallback;
+  } catch {
+    return text || fallback;
+  }
 }
 
 function useProviderConfig() {
@@ -1329,6 +1360,32 @@ function ExtraDocs({ docs, setDocs }) {
   );
 }
 
+function OutputFormatPanel({ enabled, setEnabled, value, setValue }) {
+  return (
+    <section className="panel formatPanel">
+      <div className="panelHead formatHead">
+        <div>
+          <h2>输出格式</h2>
+          <p>需要统一格式时开启，会随额外文件提示词一起发送给 AI。</p>
+        </div>
+        <label className="checkLine inline formatToggle">
+          <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
+          <span>填写格式要求</span>
+        </label>
+      </div>
+      <div className={`formatBody ${enabled ? "open" : ""}`}>
+        <label className="field">格式要求
+          <textarea
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            placeholder="例如：使用一级/二级标题；每段不超过 200 字；结尾输出表格；问答按“问题 / 回答 / 依据”格式呈现。"
+          />
+        </label>
+      </div>
+    </section>
+  );
+}
+
 function friendlyJobError(job) {
   const detail = String(job.errorSummary || job.error || "").trim();
   if (job.status === "done") {
@@ -1369,10 +1426,75 @@ function JobError({ job }) {
   );
 }
 
-function JobList({ jobs, onDelete, onRetry, onRetryExtra, queueState, onResume }) {
-  const doneJobs = jobs.filter((job) => job.outputFiles?.length || job.outputUrl);
+const REVIEW_RISK_LABELS = {
+  none: "无风险",
+  low: "低风险",
+  medium: "中风险",
+  high: "高风险"
+};
+
+function reviewStatusText(job) {
+  const review = job.review;
+  if (job.reviewLocked) return "高风险审查未放行";
+  if (!review && job.reviewStatus === "running") return "审查中";
+  if (!review && job.reviewStatus === "error") return "审查失败";
+  if (!review) return "";
+  if (review.status === "running") return "审查中";
+  if (review.status === "error") return "审查失败";
+  if (review.status === "done") return `审查通过 · ${REVIEW_RISK_LABELS[review.riskLevel] || review.riskLevel || "已审查"}`;
+  return "";
+}
+
+function ReviewResultModal({ job, onClose }) {
+  const review = job?.review;
+  const files = review?.result?.files || [];
+  return (
+    <div className="modalOverlay" role="presentation" onMouseDown={onClose}>
+      <section className="templateModal reviewModal panel" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modalHead">
+          <div>
+            <h2>审查结果</h2>
+            <p>{job?.title || "任务"} · {REVIEW_RISK_LABELS[review?.riskLevel] || review?.riskLevel || "未完成"}</p>
+          </div>
+          <button className="iconBtn" onClick={onClose} aria-label="关闭"><X size={18} /></button>
+        </div>
+        {review?.error && <div className="inlineError">{review.error}</div>}
+        {files.length === 0 ? (
+          <div className="usageEmpty">暂无可展示的审查明细。</div>
+        ) : (
+          <div className="reviewFiles">
+            {files.map((file, index) => (
+              <article className={`reviewFile risk-${file.riskLevel || "none"}`} key={`${file.label}-${index}`}>
+                <header>
+                  <strong>{file.label || `文件 ${index + 1}`}</strong>
+                  <span>{REVIEW_RISK_LABELS[file.riskLevel] || file.riskLevel || "未标记"}</span>
+                </header>
+                {file.summary && <p>{file.summary}</p>}
+                {!!file.issues?.length && (
+                  <ul>
+                    {file.issues.map((issue, issueIndex) => (
+                      <li key={issueIndex}>
+                        <b>{issue.rule || "问题"}</b>
+                        <span>{issue.evidence || issue.description || issue.suggestion || "未提供说明"}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function JobList({ jobs, onDelete, onRetry, onRetryExtra, onRetryReview, queueState, onResume }) {
+  const doneJobs = jobs.filter((job) => (job.outputFiles?.length || job.outputUrl) && !job.reviewLocked);
   const [downloadError, setDownloadError] = useState("");
   const [downloading, setDownloading] = useState(false);
+  const [singleDownloading, setSingleDownloading] = useState("");
+  const [reviewModalJob, setReviewModalJob] = useState(null);
 
   async function downloadAll() {
     if (!doneJobs.length || downloading) return;
@@ -1390,19 +1512,26 @@ function JobList({ jobs, onDelete, onRetry, onRetryExtra, queueState, onResume }
         }
         throw new Error(message || `批量下载失败：${res.status}`);
       }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = fileNameFromDisposition(res.headers.get("content-disposition"));
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      await saveBlobResponse(res, "video-to-word.zip");
     } catch (err) {
       setDownloadError(err.message || "批量下载失败，请稍后重试。");
     } finally {
       setDownloading(false);
+    }
+  }
+
+  async function downloadOne(file, job) {
+    if (!file?.url || job.reviewLocked || singleDownloading) return;
+    setDownloadError("");
+    setSingleDownloading(file.url);
+    try {
+      const res = await apiFetch(file.url);
+      if (!res.ok) throw new Error(await readErrorResponse(res, "文件下载失败"));
+      await saveBlobResponse(res, `${file.label || "文件"}.docx`);
+    } catch (err) {
+      setDownloadError(err.message || "文件下载失败，请稍后重试。");
+    } finally {
+      setSingleDownloading("");
     }
   }
 
@@ -1415,6 +1544,7 @@ function JobList({ jobs, onDelete, onRetry, onRetryExtra, queueState, onResume }
         </button>
       </div>
       {downloadError && <div className="inlineError">{downloadError}</div>}
+      {reviewModalJob && <ReviewResultModal job={reviewModalJob} onClose={() => setReviewModalJob(null)} />}
       {queueState?.paused && (
         <div className="queuePaused">
           <div>
@@ -1438,6 +1568,7 @@ function JobList({ jobs, onDelete, onRetry, onRetryExtra, queueState, onResume }
           const statusText = { running: "处理中", done: "已完成", error: "失败", queued: "排队中" }[job.status] || "排队中";
           const usage = job.usageSummary;
           const phaseText = job.phaseIndex && job.phaseTotal ? `${job.phaseIndex}/${job.phaseTotal}` : "";
+          const reviewText = job.reviewEnabled ? reviewStatusText(job) : "";
           const barValue = job.status === "done"
             ? 100
             : Math.max(0, Math.min(100, Math.round(Number(job.progress ?? 0))));
@@ -1458,6 +1589,11 @@ function JobList({ jobs, onDelete, onRetry, onRetryExtra, queueState, onResume }
                       {formatJobUsage(usage)}
                     </span>
                   )}
+                  {reviewText && (
+                    <span className={`reviewStat ${job.reviewLocked ? "locked" : job.review?.riskLevel || job.reviewStatus || ""}`}>
+                      <ShieldCheck size={14} />{reviewText}
+                    </span>
+                  )}
                 </div>
                 <div className="bar">
                   <div className="barTrack"><div className={`barFill ${barClass}`} style={{ width: `${barValue}%` }} /></div>
@@ -1466,8 +1602,25 @@ function JobList({ jobs, onDelete, onRetry, onRetryExtra, queueState, onResume }
               </div>
               <div className="jobFooter">
                 {job.error && <JobError job={job} />}
+                {job.reviewEnabled && job.review?.error && <div className="jobErrMsg">审查失败：{job.review.error}</div>}
                 <div className="downloads">
-                  {files.map((file) => <a className="chip" key={file.url} href={`${API}${file.url}`} download><Download size={15} />{file.label}</a>)}
+                  {files.map((file) => (
+                    <button
+                      className={`chip ${job.reviewLocked ? "disabled" : ""}`}
+                      key={file.url}
+                      disabled={job.reviewLocked || singleDownloading === file.url}
+                      onClick={() => downloadOne(file, job)}
+                      title={job.reviewLocked ? "高风险审查未放行" : ""}
+                    >
+                      <Download size={15} />{singleDownloading === file.url ? "下载中" : file.label}
+                    </button>
+                  ))}
+                  {job.reviewEnabled && job.review && (
+                    <button className="chip inspect" onClick={() => setReviewModalJob(job)}><Eye size={15} />审查结果</button>
+                  )}
+                  {job.reviewEnabled && (job.review?.status === "error" || job.reviewStatus === "error") && (
+                    <button className="chip retry" onClick={() => onRetryReview(job.id)}><RefreshCw size={15} />重试审查</button>
+                  )}
                   {job.status === "error" && (
                     <button className="chip retry" onClick={() => onRetry(job.id)}><RefreshCw size={15} />重试</button>
                   )}
@@ -1524,27 +1677,29 @@ function NetdiskStatusBar({ onGoConfig }) {
   );
 }
 
-function WorkPage({ mode, providerState, oss, jobs, setJobs, queueState, onDelete, onRetry, onRetryExtra, onResume, onGoConfig }) {
+function WorkPage({ mode, providerState, oss, jobs, setJobs, queueState, onDelete, onRetry, onRetryExtra, onRetryReview, onResume, onGoConfig }) {
   const draftKey = `${WORK_DRAFT_KEY_PREFIX}-${mode}`;
   const initialDraft = useMemo(() => normalizeWorkDraft(readJson(draftKey, null)), [draftKey]);
   const [links, setLinks] = useState(initialDraft.links);
   const [bulkText, setBulkText] = useState(initialDraft.bulkText);
   const [docs, setDocs] = useState(initialDraft.docs);
+  const [formatEnabled, setFormatEnabled] = useState(initialDraft.formatEnabled);
+  const [formatRequirement, setFormatRequirement] = useState(initialDraft.formatRequirement);
   const [submitState, setSubmitState] = useState({ loading: false, message: "", error: "" });
   const jobSectionRef = useRef(null);
   const isCloud = mode === "cloud";
   const canStart = links.some((item) => item.link.trim());
 
   useEffect(() => {
-    localStorage.setItem(draftKey, JSON.stringify({ links, bulkText, docs }));
-  }, [draftKey, links, bulkText, docs]);
+    localStorage.setItem(draftKey, JSON.stringify({ links, bulkText, docs, formatEnabled, formatRequirement }));
+  }, [draftKey, links, bulkText, docs, formatEnabled, formatRequirement]);
 
   useEffect(() => {
     setSubmitState((state) => {
       if (state.loading || (!state.error && !state.message)) return state;
       return { loading: false, message: "", error: "" };
     });
-  }, [links, bulkText, docs, mode]);
+  }, [links, bulkText, docs, formatEnabled, formatRequirement, mode]);
 
   async function submit() {
     const normalizedLinks = links
@@ -1567,6 +1722,7 @@ function WorkPage({ mode, providerState, oss, jobs, setJobs, queueState, onDelet
         body: JSON.stringify({
           links: validLinks,
           extraPrompts: docs,
+          formatRequirement: formatEnabled ? formatRequirement : "",
           concurrency: 5,
           settings: buildJobRuntimeSettings(!isCloud)
         })
@@ -1597,6 +1753,7 @@ function WorkPage({ mode, providerState, oss, jobs, setJobs, queueState, onDelet
             <span>逐字稿</span>
             <span>额外文件</span>
             <span>按格式要求渲染 Word</span>
+            <span>企业审查（可选）</span>
           </div>
         </div>
         <button className="primary" disabled={!canStart || submitState.loading} onClick={submit}>
@@ -1623,8 +1780,14 @@ function WorkPage({ mode, providerState, oss, jobs, setJobs, queueState, onDelet
         showMove={!isCloud}
       />
       <ExtraDocs docs={docs} setDocs={setDocs} />
+      <OutputFormatPanel
+        enabled={formatEnabled}
+        setEnabled={setFormatEnabled}
+        value={formatRequirement}
+        setValue={setFormatRequirement}
+      />
       <div ref={jobSectionRef}>
-        <JobList jobs={jobs} onDelete={onDelete} onRetry={onRetry} onRetryExtra={onRetryExtra} queueState={queueState} onResume={onResume} />
+        <JobList jobs={jobs} onDelete={onDelete} onRetry={onRetry} onRetryExtra={onRetryExtra} onRetryReview={onRetryReview} queueState={queueState} onResume={onResume} />
       </div>
     </>
   );
@@ -1777,25 +1940,45 @@ function AdminPage() {
   const [resetUserId, setResetUserId] = useState("");
   const [resetPassword, setResetPassword] = useState("");
   const [resetMessage, setResetMessage] = useState("");
+  const [reviewRulePacks, setReviewRulePacks] = useState([]);
+  const [reviewConfig, setReviewConfig] = useState({ enabled: false, baseUrl: "", model: "", apiKey: "", contextLimitTokens: 1000000 });
+  const [reviewRuns, setReviewRuns] = useState([]);
+  const [reviewRuleDraft, setReviewRuleDraft] = useState("");
+  const [reviewRuleName, setReviewRuleName] = useState("");
+  const [reviewRuleVersion, setReviewRuleVersion] = useState("");
+  const [reviewMessage, setReviewMessage] = useState("");
+  const [overrideReasons, setOverrideReasons] = useState({});
 
   async function loadAdmin(activeRange = range) {
     setLoading(true);
     setError("");
     try {
-      const [usersRes, summaryRes, recordsRes] = await Promise.all([
+      const [usersRes, summaryRes, recordsRes, packsRes, reviewConfigRes, reviewsRes] = await Promise.all([
         apiFetch(`/api/admin/users?range=${activeRange}`),
         apiFetch(`/api/admin/usage/summary?range=${activeRange}`),
-        apiFetch(`/api/admin/usage/records?range=${activeRange}&page=1&pageSize=100`)
+        apiFetch(`/api/admin/usage/records?range=${activeRange}&page=1&pageSize=100`),
+        apiFetch("/api/admin/review/rule-packs"),
+        apiFetch("/api/admin/review/config"),
+        apiFetch("/api/admin/reviews?locked=true")
       ]);
       const usersData = await usersRes.json();
       const summaryData = await summaryRes.json();
       const recordsData = await recordsRes.json();
+      const packsData = await packsRes.json();
+      const reviewConfigData = await reviewConfigRes.json();
+      const reviewsData = await reviewsRes.json();
       if (!usersRes.ok) throw new Error(usersData.error || "账号列表读取失败");
       if (!summaryRes.ok) throw new Error(summaryData.error || "用量汇总读取失败");
       if (!recordsRes.ok) throw new Error(recordsData.error || "用量明细读取失败");
+      if (!packsRes.ok) throw new Error(packsData.error || "审查规则读取失败");
+      if (!reviewConfigRes.ok) throw new Error(reviewConfigData.error || "审查配置读取失败");
+      if (!reviewsRes.ok) throw new Error(reviewsData.error || "审查记录读取失败");
       setUsers(usersData.users || []);
       setSummary(summaryData.summary);
       setRecords(recordsData.records || []);
+      setReviewRulePacks(packsData.rulePacks || []);
+      setReviewConfig((old) => ({ ...old, ...(reviewConfigData.config || {}) }));
+      setReviewRuns(reviewsData.reviews || []);
     } catch (err) {
       setError(err.message || "管理后台读取失败。");
     } finally {
@@ -1828,6 +2011,112 @@ function AdminPage() {
     }
   }
 
+  async function toggleReviewEntitlement(userId, enabled) {
+    setError("");
+    try {
+      const res = await apiFetch(`/api/admin/users/${userId}/review-entitlement`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "审查服务开关保存失败");
+      setUsers((old) => old.map((item) => item.id === userId ? { ...item, reviewEnabled: enabled } : item));
+    } catch (err) {
+      setError(err.message || "审查服务开关保存失败。");
+    }
+  }
+
+  async function importRulePack() {
+    setReviewMessage("");
+    setError("");
+    try {
+      const res = await apiFetch("/api/admin/review/rule-packs/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: reviewRuleName, version: reviewRuleVersion, markdown: reviewRuleDraft })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "规则包导入失败");
+      setReviewRuleDraft("");
+      setReviewRuleName("");
+      setReviewRuleVersion("");
+      setReviewMessage("规则包已导入");
+      loadAdmin(range);
+    } catch (err) {
+      setError(err.message || "规则包导入失败。");
+    }
+  }
+
+  async function activateRulePack(id) {
+    setReviewMessage("");
+    setError("");
+    try {
+      const res = await apiFetch(`/api/admin/review/rule-packs/${id}/activate`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "规则包启用失败");
+      setReviewRulePacks(data.rulePacks || []);
+      setReviewMessage("规则包已启用");
+    } catch (err) {
+      setError(err.message || "规则包启用失败。");
+    }
+  }
+
+  async function saveReviewConfig() {
+    setReviewMessage("");
+    setError("");
+    try {
+      const res = await apiFetch("/api/admin/review/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: reviewConfig })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "审查配置保存失败");
+      setReviewConfig((old) => ({ ...old, ...(data.config || {}) }));
+      setReviewMessage("审查配置已保存");
+    } catch (err) {
+      setError(err.message || "审查配置保存失败。");
+    }
+  }
+
+  async function testReviewModel() {
+    setReviewMessage("");
+    setError("");
+    try {
+      const res = await apiFetch("/api/admin/review/config/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: reviewConfig })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "审查模型连接失败");
+      setReviewMessage(`连接正常：${data.model || reviewConfig.model}`);
+    } catch (err) {
+      setError(err.message || "审查模型连接失败。");
+    }
+  }
+
+  async function overrideReview(jobId) {
+    const reason = String(overrideReasons[jobId] || "").trim();
+    setReviewMessage("");
+    setError("");
+    try {
+      const res = await apiFetch(`/api/admin/reviews/${jobId}/override`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "放行失败");
+      setOverrideReasons((old) => ({ ...old, [jobId]: "" }));
+      setReviewRuns((old) => old.filter((item) => item.jobId !== jobId));
+      setReviewMessage("已放行该任务");
+    } catch (err) {
+      setError(err.message || "放行失败。");
+    }
+  }
+
   const modelRows = summary?.byModel || [];
   const userRows = summary?.byUser || [];
 
@@ -1848,6 +2137,9 @@ function AdminPage() {
           <div className="usageRange">
             <button className={section === "users" ? "active" : ""} onClick={() => setSection("users")}><Users size={15} />账号管理</button>
             <button className={section === "usage" ? "active" : ""} onClick={() => setSection("usage")}><BarChart3 size={15} />用量查看</button>
+            <button className={section === "reviewRules" ? "active" : ""} onClick={() => setSection("reviewRules")}><FileText size={15} />审查规则</button>
+            <button className={section === "reviewConfig" ? "active" : ""} onClick={() => setSection("reviewConfig")}><ShieldCheck size={15} />审查配置</button>
+            <button className={section === "reviewManage" ? "active" : ""} onClick={() => setSection("reviewManage")}><AlertTriangle size={15} />审查管理</button>
           </div>
           <div className="usageRange">
             <button className={range === "today" ? "active" : ""} onClick={() => setRange("today")}>今日</button>
@@ -1855,12 +2147,13 @@ function AdminPage() {
           </div>
         </div>
         {error && <div className="inlineError">{error}</div>}
+        {reviewMessage && <div className="adminOk">{reviewMessage}</div>}
 
         {section === "users" ? (
           <>
             <div className="usageTable adminUsersTable">
               <div className="usageTableHead">
-                <span>账号</span><span>身份</span><span>任务</span><span>本期用量</span><span>创建时间</span>
+                <span>账号</span><span>身份</span><span>任务</span><span>本期用量</span><span>审查服务</span><span>创建时间</span>
               </div>
               {users.length === 0 && <div className="usageEmpty">暂无账号。</div>}
               {users.map((item) => (
@@ -1869,6 +2162,11 @@ function AdminPage() {
                   <span>{item.isAdmin ? "管理员" : item.provider || "password"}</span>
                   <span>总 {item.jobs?.total || 0} · 完成 {item.jobs?.done || 0} · 失败 {item.jobs?.error || 0}</span>
                   <span>{formatJobUsage(item.usage || {})}</span>
+                  <span>
+                    <button className={`miniSwitch ${item.reviewEnabled ? "on" : ""}`} onClick={() => toggleReviewEntitlement(item.id, !item.reviewEnabled)}>
+                      {item.reviewEnabled ? "已启用" : "未启用"}
+                    </button>
+                  </span>
                   <span>{item.createdAt ? new Date(item.createdAt).toLocaleString("zh-CN", { hour12: false }) : "-"}</span>
                 </div>
               ))}
@@ -1890,7 +2188,7 @@ function AdminPage() {
               {resetMessage && <span className="adminOk">{resetMessage}</span>}
             </form>
           </>
-        ) : (
+        ) : section === "usage" ? (
           <>
             <div className="usageCards">
               <div className="usageCard">
@@ -1960,6 +2258,87 @@ function AdminPage() {
               ))}
             </div>
           </>
+        ) : section === "reviewRules" ? (
+          <>
+            <div className="adminReviewGrid">
+              <div className="tile adminReviewForm">
+                <label className="field">规则包名称
+                  <input value={reviewRuleName} onChange={(e) => setReviewRuleName(e.target.value)} placeholder="例如：医药合规审查规则" />
+                </label>
+                <label className="field">版本
+                  <input value={reviewRuleVersion} onChange={(e) => setReviewRuleVersion(e.target.value)} placeholder="例如：2026-06" />
+                </label>
+                <label className="field full">Markdown 规则
+                  <textarea value={reviewRuleDraft} onChange={(e) => setReviewRuleDraft(e.target.value)} placeholder="# 规则包名称&#10;version: 2026-06&#10;&#10;## 高风险&#10;- ..." />
+                </label>
+                <button className="primary compactPrimary" onClick={importRulePack} disabled={!reviewRuleDraft.trim()}>导入规则包</button>
+              </div>
+              <div className="usageTable adminRuleTable">
+                <div className="usageTableHead">
+                  <span>名称</span><span>版本</span><span>状态</span><span>创建时间</span><span>操作</span>
+                </div>
+                {reviewRulePacks.length === 0 && <div className="usageEmpty">暂无规则包。</div>}
+                {reviewRulePacks.map((pack) => (
+                  <div className="usageTableRow" key={pack.id}>
+                    <span title={pack.name}>{pack.name}</span>
+                    <span>{pack.version || "-"}</span>
+                    <span>{pack.active ? "当前启用" : "未启用"}</span>
+                    <span>{pack.createdAt ? new Date(pack.createdAt).toLocaleString("zh-CN", { hour12: false }) : "-"}</span>
+                    <span><button className="miniSwitch on" disabled={pack.active} onClick={() => activateRulePack(pack.id)}>{pack.active ? "已启用" : "启用"}</button></span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        ) : section === "reviewConfig" ? (
+          <div className="tile adminReviewForm">
+            <label className="checkLine">
+              <input type="checkbox" checked={Boolean(reviewConfig.enabled)} onChange={(e) => setReviewConfig((old) => ({ ...old, enabled: e.target.checked }))} />
+              启用企业审查模型
+            </label>
+            <label className="field">API Key
+              <input type="password" value={reviewConfig.apiKey || ""} onChange={(e) => setReviewConfig((old) => ({ ...old, apiKey: e.target.value }))} placeholder={reviewConfig.apiKey ? "已配置，留空不改" : "sk-..."} />
+            </label>
+            <label className="field">Base URL
+              <input value={reviewConfig.baseUrl || ""} onChange={(e) => setReviewConfig((old) => ({ ...old, baseUrl: e.target.value }))} placeholder="https://.../v1" />
+            </label>
+            <label className="field">模型
+              <input value={reviewConfig.model || ""} onChange={(e) => setReviewConfig((old) => ({ ...old, model: e.target.value }))} placeholder="例如：qwen-max" />
+            </label>
+            <label className="field">上下文预算 tokens
+              <input type="number" min="10000" max="2000000" value={reviewConfig.contextLimitTokens || 1000000} onChange={(e) => setReviewConfig((old) => ({ ...old, contextLimitTokens: e.target.value }))} />
+            </label>
+            <div className="adminReviewActions">
+              <button className="btn" onClick={testReviewModel}>测试连接</button>
+              <button className="primary compactPrimary" onClick={saveReviewConfig}>保存配置</button>
+            </div>
+          </div>
+        ) : section === "reviewManage" ? (
+          <div className="usageTable adminReviewRuns">
+            <div className="usageTableHead">
+              <span>任务</span><span>状态</span><span>风险</span><span>模型</span><span>放行理由</span><span>操作</span>
+            </div>
+            {reviewRuns.length === 0 && <div className="usageEmpty">暂无待放行任务。</div>}
+            {reviewRuns.map((run) => (
+              <div className="usageTableRow" key={run.id}>
+                <span title={run.jobId}>{run.jobId}</span>
+                <span>{run.status || "-"}</span>
+                <span>{REVIEW_RISK_LABELS[run.riskLevel] || run.riskLevel || "-"}</span>
+                <span>{run.model || "-"}</span>
+                <span>
+                  <input
+                    className="inlineInput"
+                    value={overrideReasons[run.jobId] || ""}
+                    onChange={(e) => setOverrideReasons((old) => ({ ...old, [run.jobId]: e.target.value }))}
+                    placeholder="填写放行理由"
+                  />
+                </span>
+                <span><button className="miniSwitch danger" onClick={() => overrideReview(run.jobId)}>放行</button></span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="usageEmpty">请选择管理功能。</div>
         )}
       </section>
     </>
@@ -2214,6 +2593,14 @@ function App({ user, onLogout }) {
     refresh();
   }
 
+  async function retryReview(id) {
+    const res = await apiFetch(`/api/jobs/${id}/review/retry`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return;
+    if (data.job) setJobs((old) => old.map((job) => job.id === id ? data.job : job));
+    refresh();
+  }
+
   return (
     <>
       <div className="bg" />
@@ -2259,6 +2646,7 @@ function App({ user, onLogout }) {
             onDelete={deleteJob}
             onRetry={retryJob}
             onRetryExtra={retryExtra}
+            onRetryReview={retryReview}
             onResume={resumeQueue}
             onGoConfig={() => setTab("model")}
           />

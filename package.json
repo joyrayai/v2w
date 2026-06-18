@@ -1,6 +1,6 @@
 {
   "name": "baidu-video-to-word",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "description": "Batch transcribe direct, page and cloud-drive videos into Word documents with ASR and OpenAI-compatible LLMs.",
   "private": false,
   "type": "module",
