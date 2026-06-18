@@ -1593,6 +1593,11 @@ function WorkPage({ mode, providerState, oss, jobs, setJobs, queueState, onDelet
           <span>{isCloud ? "网盘任务" : "直链任务"}</span>
           <h1>{isCloud ? "网盘视频转 Word" : "直链视频转 Word"}</h1>
           <p>{isCloud ? "粘贴百度网盘或夸克网盘分享链接，批量生成 Word 文件。" : "粘贴音视频直链或可解析的视频页面，批量生成 Word 文件。"}</p>
+          <div className="featurePills" aria-label="文档生成功能">
+            <span>逐字稿</span>
+            <span>额外文件</span>
+            <span>按格式要求渲染 Word</span>
+          </div>
         </div>
         <button className="primary" disabled={!canStart || submitState.loading} onClick={submit}>
           <Play size={17} />{submitState.loading ? "提交中" : "开始转写"}

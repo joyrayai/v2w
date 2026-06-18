@@ -321,6 +321,26 @@ h1, h2, h3, p { margin: 0; }
   line-height: 1.5;
   color: var(--ink-2);
 }
+.featurePills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.featurePills span {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(47,107,255,.16);
+  border-radius: 999px;
+  padding: 0 10px;
+  background: rgba(255,255,255,.7);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
 .pageHeader .primary { position: relative; }
 
 .panel {
