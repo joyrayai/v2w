@@ -1,12 +1,12 @@
-# V2W - Video to Word
+# V2W - Video to Word and OKF Export
 
 [GitHub](https://github.com/joyrayai/v2w) · [Issues](https://github.com/joyrayai/v2w/issues)
 
-V2W is a self-hosted workspace for turning videos into Word documents. It supports batch transcription from public media URLs, video pages, Baidu Netdisk shares, and Quark Netdisk shares, then generates `.docx` outputs for transcripts and prompt-based documents such as outlines, Q&A notes, summaries, mind maps, or rewritten drafts.
+V2W is a self-hosted workspace for turning videos, audio, and cloud-drive media into Word documents and OKF Markdown knowledge bundles. It supports batch transcription from public media URLs, video pages, Baidu Netdisk shares, and Quark Netdisk shares, then generates `.docx` outputs, reusable prompt-based documents, and optional OKF ZIP exports for enterprise knowledge reuse.
 
-The project is designed for small teams that need repeatable video-to-document workflows on their own server, with account-based model settings, reusable prompt templates, usage tracking, retryable jobs, and a native MCP endpoint for agent integrations such as OpenClaw.
+The project is designed for small teams that need stable media-to-document workflows on their own server, with account-based model settings, reusable prompt templates, usage tracking, retryable jobs, admin controls, and a native MCP endpoint for agent integrations such as OpenClaw. After the 0.3 OKF release, V2W focuses on performance, stability, and bug fixes; new platform-level knowledge management features will move to V2K.
 
-Current version: `0.2.0`
+Current version: `0.3.0`
 
 ## Screenshot
 
@@ -22,16 +22,23 @@ Current version: `0.2.0`
 - Quark Netdisk share processing through user-provided cookies.
 - Original transcript `.docx` output.
 - Extra `.docx` files generated from reusable prompts.
+- Optional OKF Markdown bundle output for knowledge assets under `knowledge/rules`, `knowledge/metrics`, and `knowledge/sop`.
 - Per-extra-document output format instructions rendered into real Word styles.
 - Built-in templates for `提炼版` and `思维导图`.
 - Per-account model configuration and prompt templates.
 - Retry failed jobs or only failed extra document generation.
-- Batch download for generated Word files.
+- Batch download for generated files.
 - Account login, admin user management, and usage records.
 - Usage tracking for ASR duration, AI tokens, and estimated cost.
 - Optional enterprise content review with administrator-managed rule packs, dedicated review model settings, high-risk download locks, and approval records.
 - SQLite persistence for single-server deployments.
 - Native HTTP MCP endpoint for agent workflows.
+
+## Roadmap
+
+V2W enters maintenance mode after the `0.3.0` OKF release. Future V2W updates will focus on performance, stability, and bug fixes for the current transcription, Word, OKF, MCP, netdisk, and admin workflows.
+
+New knowledge-management capabilities will move to **V2K**, a platform-oriented successor for turning Word documents, videos, audio, and structured knowledge into OKF assets. V2K is planned to provide online knowledge storage, unified knowledge management, and basic question-answering over organized knowledge assets.
 
 ## Tech Stack
 
@@ -260,7 +267,7 @@ Available tools:
 | `v2w.templates.create` | Create an extra document template |
 | `v2w.templates.update` | Update an extra document template |
 | `v2w.templates.delete` | Delete an extra document template |
-| `v2w.jobs.submit` | Submit direct, page, Baidu Netdisk or Quark Netdisk links as jobs |
+| `v2w.jobs.submit` | Submit direct, page, Baidu Netdisk or Quark Netdisk links as jobs; optionally generate OKF bundles |
 | `v2w.jobs.list` | List jobs for the current account |
 | `v2w.jobs.get` | Read one job and its current progress |
 | `v2w.jobs.retry` | Retry a failed job, or retry only failed extra documents when possible |
@@ -303,11 +310,17 @@ Task workflow over MCP:
 2. Call `v2w.config.get`; if no config exists, call `v2w.config.save`.
 3. Call `v2w.config.test` to verify the AI processing model before submitting work.
 4. For Baidu Netdisk links, call `v2w.netdisk.status`; if needed, use `v2w.baidu_qr.start` and poll `v2w.baidu_qr.status`. Use `v2w.baidu_qr.cancel` if the user abandons the QR login.
-5. Call `v2w.jobs.submit` with `links` and optional `extraPrompts`.
+5. Call `v2w.jobs.submit` with `links`, optional `extraPrompts`, and optional OKF fields.
 6. Poll `v2w.jobs.list` or `v2w.jobs.get`.
 7. Call `v2w.jobs.downloads` after completion.
 
-`v2w.jobs.submit` always uses the model configuration saved on the V2W account. Agents may pass runtime-only options such as `concurrency`, `directUrlMode`, or `publicBaseUrl`, but should not pass model secrets in job calls.
+`v2w.jobs.submit` always uses the model configuration saved on the V2W account. Agents may pass runtime-only options such as `concurrency`, `directUrlMode`, `publicBaseUrl`, `okfEnabled`, or `okfOptions`, but should not pass model secrets in job calls.
+
+OKF bundle workflow:
+
+- Pass `okfEnabled: true` to generate a Markdown ZIP bundle alongside Word outputs.
+- Optionally pass `okfOptions` with `owner`, `version`, and `tags`.
+- The generated ZIP contains `manifest.json` and Markdown files under `knowledge/rules`, `knowledge/metrics`, and `knowledge/sop`.
 
 Template workflow:
 
@@ -376,4 +389,4 @@ npm run doctor    # Check environment
 
 ## License
 
-MIT
+GPL-3.0-only
