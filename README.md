@@ -4,13 +4,23 @@
 
 V2W is a self-hosted workspace for turning videos, audio, and cloud-drive media into Word documents and OKF Markdown knowledge bundles. It supports batch transcription from public media URLs, video pages, Baidu Netdisk shares, and Quark Netdisk shares, then generates `.docx` outputs, reusable prompt-based documents, and optional OKF ZIP exports for enterprise knowledge reuse.
 
-The project is designed for small teams that need stable media-to-document workflows on their own server, with account-based model settings, reusable prompt templates, usage tracking, retryable jobs, admin controls, and a native MCP endpoint for agent integrations such as OpenClaw. After the 0.3 OKF release, V2W focuses on performance, stability, and bug fixes; new platform-level knowledge management features will move to V2K.
+The project is designed for small teams that need stable media-to-document workflows on their own server, with account-based model settings, reusable prompt templates, usage tracking, retryable jobs, admin controls, and a native MCP endpoint for agent integrations such as OpenClaw.
+
+V2W is an early open-source release. The core transcription and document-generation workflow is the default path. Enterprise review, OKF export, MCP integration, and netdisk automation are optional advanced capabilities that can be enabled only when your deployment needs them.
 
 Current version: `0.3.0`
 
 ## Screenshot
 
 ![V2W web app](docs/screenshots/workspace.png)
+
+## Core Workflow
+
+1. Submit one or more direct media links, video page links, or supported netdisk share links.
+2. Configure an ASR model and an OpenAI-compatible AI model for the current account.
+3. Generate the original transcript Word file.
+4. Optionally generate extra Word files from reusable prompts and per-document format requirements.
+5. Download individual outputs or a batch ZIP.
 
 ## Features
 
@@ -33,6 +43,15 @@ Current version: `0.3.0`
 - Optional enterprise content review with administrator-managed rule packs, dedicated review model settings, high-risk download locks, and approval records.
 - SQLite persistence for single-server deployments.
 - Native HTTP MCP endpoint for agent workflows.
+
+## Advanced Capabilities
+
+These features are optional and are not required for ordinary video-to-Word usage:
+
+- **OKF export**: generate Markdown knowledge bundles under `knowledge/rules`, `knowledge/metrics`, and `knowledge/sop`.
+- **Enterprise review**: run post-generation document review with administrator-managed rule packs, a dedicated review model, high-risk download locks, and approval records.
+- **MCP endpoint**: expose V2W workflows to compatible agents, including setup, account, job, usage, template, and netdisk tools.
+- **Netdisk automation**: use Baidu Netdisk or Quark Netdisk credentials in a self-hosted deployment to process share links.
 
 ## Roadmap
 
@@ -63,6 +82,14 @@ New knowledge-management capabilities will move to **V2K**, a platform-oriented 
 - Chrome or Chromium for Baidu QR-code login
 
 Public direct links can work without `BaiduPCS-Go`. Netdisk links require the corresponding netdisk authorization.
+
+## Platform and Content Responsibility
+
+V2W does not grant access rights to third-party content. You are responsible for ensuring that you have permission to access, download, transcribe, process, and store any media submitted to the system.
+
+Netdisk, video-page, and download integrations depend on third-party services and tools such as Baidu Netdisk, Quark Netdisk, Bilibili, `yt-dlp`, and `BaiduPCS-Go`. Their availability may change, and your use of those integrations should comply with the relevant platform terms, local law, and your organization’s data policies.
+
+Never submit credentials, cookies, API keys, confidential recordings, or regulated personal data to a deployment you do not control.
 
 ## Quick Start
 
@@ -114,7 +141,7 @@ Then verify tool discovery:
 openclaw mcp probe v2w-local --json
 ```
 
-V2W should expose `33` MCP tools in version `0.2.0`.
+V2W should expose `33` MCP tools in version `0.3.0`.
 
 ## Manual Setup
 
@@ -185,7 +212,7 @@ Example requirements:
 
 ## Enterprise Review
 
-V2W `0.2.0` adds an optional enterprise review workflow for teams that need post-generation compliance checks.
+V2W includes an optional enterprise review workflow for teams that need post-generation compliance checks.
 
 This capability is disabled by default and enabled per account by an administrator. Standard users who only need transcription and prompt-based Word generation do not need to configure or interact with it. When enabled, completed jobs are reviewed against the active rule pack after the transcript and extra Word files are generated.
 
@@ -376,6 +403,10 @@ Unsupported netdisk providers will be rejected with a clear error message.
 - Large files require enough local disk space for temporary download and audio extraction.
 - Netdisk cookies can expire and may need re-authorization.
 - Estimated cost is calculated from local pricing config and may differ from the final provider bill.
+
+## Third-Party Marks
+
+This repository may show names or logos for supported providers and tools, including GitHub, Alibaba Cloud, DeepSeek, SiliconFlow, Baidu Netdisk, Quark Netdisk, Bilibili, and other services. Those names and marks belong to their respective owners. Their appearance only indicates interoperability or configuration presets, not endorsement or affiliation.
 
 ## Useful Commands
 
