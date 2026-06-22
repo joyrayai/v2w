@@ -10,9 +10,25 @@ V2W is an early open-source release. The core transcription and document-generat
 
 Current version: `0.3.0`
 
-## Screenshot
+## Screenshots
 
-![V2W web app](docs/screenshots/workspace.png)
+### Workspace
+
+![Direct media workflow](docs/screenshots/workspace-direct.png)
+
+### More Views
+
+| Netdisk jobs | Output and OKF options |
+| --- | --- |
+| ![Baidu and Quark netdisk workflow](docs/screenshots/workspace-netdisk.png) | ![Word, format requirements, OKF bundle, and extra document options](docs/screenshots/output-okf.png) |
+
+| Model configuration | Usage center |
+| --- | --- |
+| ![Per-account model and netdisk authorization settings](docs/screenshots/model-config.png) | ![ASR duration, AI token usage, records, and estimated costs](docs/screenshots/usage-center.png) |
+
+| Admin review controls |
+| --- |
+| ![Admin rule pack and enterprise review management](docs/screenshots/admin-review.png) |
 
 ## Core Workflow
 

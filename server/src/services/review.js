@@ -248,7 +248,7 @@ function buildReviewPrompt(rulePack, outputs, batchIndex, batchTotal) {
     String(output.text || "")
   ].filter(Boolean).join("\n")).join("\n\n");
   return [
-    "你是医药企业内容合规审查助手。请根据规则包审查多个 Word 文档文本。",
+    "你是企业内容合规审查助手。请根据规则包审查多个 Word 文档文本。",
     "只返回 JSON，不要 Markdown，不要解释。",
     "必须按输入文件逐个返回审查结果。",
     "每个文件结果必须原样返回输入的 fileId，不要自己生成或省略。",
@@ -371,7 +371,7 @@ export async function runDocumentReview({ job, rulePack, config, store }) {
     for (let index = 0; index < batches.length; index += 1) {
       const batch = batches[index];
       const json = await chatCompletion([
-        { role: "system", content: "你是严谨的医药合规审查 JSON 输出引擎。只返回合法 JSON。" },
+        { role: "system", content: "你是严谨的企业合规审查 JSON 输出引擎。只返回合法 JSON。" },
         { role: "user", content: buildReviewPrompt(rulePack, batch, index, batches.length) }
       ], settings, 0.1, { response_format: { type: "json_object" } });
       const content = json.choices?.[0]?.message?.content || "";

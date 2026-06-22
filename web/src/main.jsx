@@ -1327,7 +1327,7 @@ function ExtraDocs({ docs, setDocs, embedded = false }) {
                   <button className="miniBtn danger" title="删除" onClick={() => setDocs(docs.filter((_, i) => i !== index))}><Trash2 size={15} /></button>
                 </div>
                 <label className="docField docPrompt">提示词
-                  <textarea placeholder="例如：请扩写成专家演讲稿，不少于 4000 字；或生成内容大纲、用户问答。" value={doc.prompt} onChange={(e) => setDocs(docs.map((item, i) => i === index ? { ...item, prompt: e.target.value, templateId: item.templateId || "" } : item))} />
+                  <textarea placeholder="例如：请扩写成培训讲稿，不少于 4000 字；或生成内容大纲、用户问答。" value={doc.prompt} onChange={(e) => setDocs(docs.map((item, i) => i === index ? { ...item, prompt: e.target.value, templateId: item.templateId || "" } : item))} />
                 </label>
                 <div className={`formatRequirementBox ${doc.formatEnabled ? "open" : ""}`}>
                   <label className="checkLine formatToggle">
@@ -1367,7 +1367,7 @@ function ExtraDocs({ docs, setDocs, embedded = false }) {
               </div>
             </div>
             <label className="field">模板名称
-              <input value={templateModal.title} onChange={(e) => setTemplateModal((old) => ({ ...old, title: e.target.value }))} placeholder="例如：专家演讲稿" autoFocus />
+              <input value={templateModal.title} onChange={(e) => setTemplateModal((old) => ({ ...old, title: e.target.value }))} placeholder="例如：培训讲稿" autoFocus />
             </label>
             <label className="field">提示词
               <textarea value={templateModal.prompt} onChange={(e) => setTemplateModal((old) => ({ ...old, prompt: e.target.value }))} placeholder="写给模型的处理要求" />
@@ -2243,7 +2243,7 @@ function AdminReviewRulesPanel({
     <div className="adminReviewGrid">
       <div className="tile adminReviewForm">
         <label className="field">规则包名称
-          <input value={reviewRuleName} onChange={(e) => setReviewRuleName(e.target.value)} placeholder="例如：医药合规审查规则" />
+          <input value={reviewRuleName} onChange={(e) => setReviewRuleName(e.target.value)} placeholder="例如：内容安全审查规则" />
         </label>
         <label className="field">版本
           <input value={reviewRuleVersion} onChange={(e) => setReviewRuleVersion(e.target.value)} placeholder="例如：2026-06" />
