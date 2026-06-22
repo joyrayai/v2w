@@ -1,10 +1,10 @@
-# V2W - Video to Word
+# V2W - Video to Word and OKF Export
 
 [GitHub](https://github.com/joyrayai/v2w) · [Issues](https://github.com/joyrayai/v2w/issues)
 
-V2W is a self-hosted workspace for turning videos into Word documents. It supports batch transcription from public media URLs, video pages, Baidu Netdisk shares, and Quark Netdisk shares, then generates `.docx` outputs for transcripts and prompt-based documents such as outlines, Q&A notes, summaries, mind maps, or rewritten drafts.
+V2W is a self-hosted workspace for turning videos, audio, and cloud-drive media into Word documents and OKF Markdown knowledge bundles. It supports batch transcription from public media URLs, video pages, Baidu Netdisk shares, and Quark Netdisk shares, then generates `.docx` outputs, reusable prompt-based documents, and optional OKF ZIP exports for enterprise knowledge reuse.
 
-The project is designed for small teams that need repeatable video-to-document workflows on their own server, with account-based model settings, reusable prompt templates, usage tracking, retryable jobs, and a native MCP endpoint for agent integrations such as OpenClaw.
+The project is designed for small teams that need stable media-to-document workflows on their own server, with account-based model settings, reusable prompt templates, usage tracking, retryable jobs, admin controls, and a native MCP endpoint for agent integrations such as OpenClaw. After the 0.3 OKF release, V2W focuses on performance, stability, and bug fixes; new platform-level knowledge management features will move to V2K.
 
 Current version: `0.3.0`
 

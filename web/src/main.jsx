@@ -974,7 +974,7 @@ function ConfigPage({ providerState, ossState }) {
       <section className="configTop panel">
         <div>
           <h1>模型配置</h1>
-          <p>配置模型服务、网盘授权和高级存储。</p>
+          <p>配置转写、AI 处理、网盘授权和高级存储，保障 V2W 当前流程稳定运行。</p>
         </div>
         <div className="saveGroup">
           {saveMessage ? <span>{saveMessage}</span> : latestSavedAt && <span>已保存 {formatSavedTime(latestSavedAt)}</span>}
@@ -1915,8 +1915,8 @@ function WorkPage({ mode, providerState, oss, jobs, setJobs, queueState, onDelet
       <section className="pageHeader">
         <div className="pageHeaderText">
           <span>{isCloud ? "网盘来源" : "直链来源"}</span>
-          <h1>新建任务</h1>
-          <p>{isCloud ? "粘贴百度网盘或夸克网盘分享链接，选择输出内容后加入队列。" : "粘贴音视频直链或可解析的视频页面，选择输出内容后加入队列。"}</p>
+          <h1>新建转写任务</h1>
+          <p>{isCloud ? "粘贴百度网盘或夸克网盘分享链接，生成 Word、OKF 或额外文档。" : "粘贴音视频直链或可解析的视频页面，生成 Word、OKF 或额外文档。"}</p>
         </div>
         <div className="headerModeBadge">{isCloud ? "网盘任务" : "直链任务"}</div>
       </section>
@@ -2002,7 +2002,7 @@ function UsagePage({ user }) {
       <section className="configTop panel">
         <div>
           <h1>个人中心</h1>
-          <p>查看任务用量和模型消耗。</p>
+          <p>查看个人转写任务、Word/OKF 输出相关用量和模型消耗。</p>
         </div>
         <div className="saveGroup">
           <span>{user?.username}</span>
@@ -2586,7 +2586,7 @@ function AdminPage() {
       <section className="configTop panel">
         <div>
           <h1>管理后台</h1>
-          <p>管理账号并查看全站资源消耗。</p>
+          <p>集中管理账号权限、全站用量和企业审查流程。</p>
         </div>
         <div className="saveGroup">
           <button className="btn" onClick={() => loadAdmin(range)}>{loading ? "刷新中" : "刷新"}</button>
@@ -2679,8 +2679,8 @@ function AuthScreen({ onAuthed }) {
       <main className="authShell">
         <section className="authCard panel">
           <span className="brandMark authMark"><Sparkles size={18} /></span>
-          <h1>视频转 Word</h1>
-          <p>登录后进入批量转写工作台。</p>
+          <h1>V2W 转写与 OKF 工作台</h1>
+          <p>登录后处理直链或网盘媒体，生成 Word 文档、OKF 知识包和额外文件。</p>
           <div className="loginTabs authTabs">
             <button className={mode === "login" ? "active" : ""} onClick={() => setMode("login")}>登录</button>
             <button className={mode === "register" ? "active" : ""} onClick={() => setMode("register")}>注册</button>
@@ -2745,7 +2745,7 @@ function SetupScreen({ status, onAuthed, onRefresh }) {
           <div className="setupIntro">
             <span className="brandMark authMark"><Sparkles size={18} /></span>
             <h1>初始化 V2W</h1>
-            <p>创建第一个管理员账号后即可进入工作台。系统工具可以稍后补齐，直链转写不依赖网盘工具。</p>
+            <p>创建第一个管理员账号后即可进入 V2W 工作台。系统工具可以稍后补齐，直链转写不依赖网盘工具。</p>
           </div>
           <div className="setupGrid">
             <div className="setupBlock">
@@ -2846,7 +2846,7 @@ function App({ user, onLogout }) {
   }, [jobs]);
 
   useEffect(() => {
-    const tabTitle = "视频转 Word";
+    const tabTitle = "V2W";
     document.title = tabTitle;
     return () => { document.title = tabTitle; };
   }, []);
@@ -2906,9 +2906,9 @@ function App({ user, onLogout }) {
       <div className="bg" />
       <header className="topbar">
         <span className="brandMark"><Sparkles size={17} /></span>
-        <b>视频转 Word</b>
+        <b>V2W</b>
         <span className="sep">·</span>
-        <span className="sub">批量转写工作台</span>
+        <span className="sub">转写 · Word · OKF 工作台</span>
         <div className="accountBar">
           <a className="githubLink" href="https://github.com/joyrayai/v2w" target="_blank" rel="noreferrer">
             <img src={githubMark} alt="" />
