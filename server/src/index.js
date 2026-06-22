@@ -41,6 +41,7 @@ import {
   transcriptToText
 } from "./services/ai.js";
 import { writeWord } from "./services/word.js";
+import { generateOkfBundle } from "./services/okf.js";
 import { registerRoutes } from "./routes.js";
 import { registerMcpRoutes } from "./mcp/http.js";
 import { detectNetdiskProvider, unsupportedNetdiskMessage } from "./services/netdisk.js";
@@ -229,7 +230,7 @@ function markStarted(job, step, progress) {
 function jobPhaseTotal(job) {
   const extraCount = Array.isArray(job.extraPrompts) ? job.extraPrompts.filter((item) => item.prompt?.trim()).length : 0;
   const hasSmartTitle = Array.isArray(job.extraPrompts) && job.extraPrompts.some((item) => item.prompt?.trim() && item.smartTitle);
-  return 3 + extraCount + (hasSmartTitle ? 1 : 0);
+  return 3 + extraCount + (hasSmartTitle ? 1 : 0) + (job.okfEnabled ? 1 : 0);
 }
 
 function phaseProgressFromOverall(progress, start, end) {
@@ -1203,6 +1204,66 @@ async function smartRenameExtraOutputsIfNeeded(job, rawText, generatedExtraOutpu
   return job.outputFiles || [];
 }
 
+async function generateOkfFileForJob(job, rawText, optionalWarnings, settingsOverride = null) {
+  if (!job.okfEnabled) return job.outputFiles || [];
+  const settings = settingsOverride || job.settings || {};
+  const extraCount = extraPromptEntries(job).length;
+  const hasSmartTitle = extraPromptEntries(job).some((item) => item.smartTitle);
+  const phaseIndex = 4 + extraCount + (hasSmartTitle ? 1 : 0);
+  updatePhase(job, phaseIndex, "生成 OKF 知识格式", 96, 20);
+  try {
+    const result = await generateOkfBundle({
+      job,
+      rawText,
+      settings,
+      outputDir: OUTPUT_DIR,
+      options: job.okfOptions || {}
+    });
+    const llmUsage = llmUsageFromResponse(result);
+    const totalTokens = llmUsage.totalTokens || llmUsage.inputTokens + llmUsage.outputTokens;
+    if (totalTokens || llmUsage.inputTokens || llmUsage.outputTokens) {
+      recordUsage(job, {
+        type: "llm",
+        provider: settings.llmProvider || "llm",
+        model: result.model || settings.qwenModel || "",
+        metricUnit: "token",
+        metricValue: totalTokens,
+        inputTokens: llmUsage.inputTokens,
+        outputTokens: llmUsage.outputTokens,
+        totalTokens,
+        meta: {
+          purpose: "okf_generation",
+          assetCount: result.assets?.length || 0
+        }
+      });
+    }
+    const files = Array.isArray(job.outputFiles) ? [...job.outputFiles] : [];
+    const fileEntry = {
+      label: "OKF",
+      type: "okf",
+      extension: ".zip",
+      url: `/outputs/${encodeURIComponent(result.fileName)}`
+    };
+    const existingIndex = files.findIndex((file) => file.type === "okf" || file.label === "OKF");
+    if (existingIndex >= 0) files[existingIndex] = fileEntry;
+    else files.push(fileEntry);
+    update(job, {
+      phaseProgress: 100,
+      outputFiles: files,
+      outputUrl: files[0]?.url,
+      okfSummary: {
+        assetCount: result.assets?.length || 0,
+        manifest: result.manifest
+      }
+    });
+    return files;
+  } catch (err) {
+    optionalWarnings.push(`OKF 生成失败：${err.message}`);
+    update(job, { okfError: err.message || "OKF 生成失败" });
+    return job.outputFiles || [];
+  }
+}
+
 async function processJob(job) {
   const settings = job.settings;
   let mediaUrl = job.link.trim();
@@ -1262,6 +1323,7 @@ async function processJob(job) {
   if (!extraResult.extraErrors.length) {
     await smartRenameExtraOutputsIfNeeded(job, rawText, extraResult.generatedExtraOutputs, optionalWarnings);
   }
+  await generateOkfFileForJob(job, rawText, optionalWarnings);
   const finalFiles = job.outputFiles || extraResult.files;
   let reviewRun = null;
   let reviewError = "";
@@ -1383,7 +1445,9 @@ function requeueJob(job, settings = {}) {
     reviewRiskLevel: "",
     reviewLocked: false,
     reviewRunId: "",
-    reviewError: ""
+    reviewError: "",
+    okfSummary: null,
+    okfError: ""
   });
   queue.push(job);
   pumpQueue();

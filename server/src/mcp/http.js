@@ -193,6 +193,17 @@ function parseExtraPrompts(extraPrompts) {
     .filter((item) => item.prompt);
 }
 
+function normalizeOkfOptions(input = {}) {
+  const tags = Array.isArray(input.tags)
+    ? input.tags
+    : String(input.tags || "").split(/[,，\s]+/);
+  return {
+    owner: String(input.owner || "").trim().slice(0, 80),
+    version: String(input.version || "1.0").trim().slice(0, 40) || "1.0",
+    tags: tags.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 20)
+  };
+}
+
 function getUserJob(jobs, user, jobId) {
   const job = jobs.get(String(jobId || ""));
   if (!job || job.userId !== user.id) throw new Error("任务不存在。");
@@ -515,7 +526,18 @@ export function registerMcpRoutes(app, ctx) {
         },
         concurrency: { type: "number", description: "Requested queue concurrency, capped by server limits." },
         directUrlMode: { type: "boolean", description: "Runtime override for direct media URL handling." },
-        publicBaseUrl: { type: "string", description: "Runtime public base URL used when exposing temporary media URLs." }
+        publicBaseUrl: { type: "string", description: "Runtime public base URL used when exposing temporary media URLs." },
+        okfEnabled: { type: "boolean", description: "Generate an OKF Markdown ZIP bundle for knowledge asset reuse." },
+        okfOptions: schema({
+          owner: { type: "string" },
+          version: { type: "string" },
+          tags: {
+            anyOf: [
+              { type: "string" },
+              { type: "array", items: { type: "string" } }
+            ]
+          }
+        })
       }, ["links"])
     },
     {
@@ -611,7 +633,8 @@ export function registerMcpRoutes(app, ctx) {
           admin: toolNamesByPrefix(tools, "v2w.admin.")
         },
         supportedNetdisks: ["baidu", "quark"],
-        supportedJobInputs: ["direct_media_url", "bilibili_page", "baidu_netdisk_share", "quark_netdisk_share"]
+        supportedJobInputs: ["direct_media_url", "bilibili_page", "baidu_netdisk_share", "quark_netdisk_share"],
+        supportedOutputs: ["docx", "okf_markdown_bundle"]
       };
     }
 
@@ -929,6 +952,8 @@ export function registerMcpRoutes(app, ctx) {
       const userJobs = [...jobs.values()].filter((job) => job.userId === user.id);
       const nextOrder = userJobs.reduce((max, job) => Math.max(max, Number(job.order) || 0), -1) + 1;
       const extraPrompts = parseExtraPrompts(args.extraPrompts);
+      const okfEnabled = Boolean(args.okfEnabled);
+      const okfOptions = normalizeOkfOptions(args.okfOptions || {});
       const created = validLinks.map((item, index) => {
         const job = {
           id: nanoid(10),
@@ -937,6 +962,8 @@ export function registerMcpRoutes(app, ctx) {
           order: nextOrder + index,
           prompt: String(args.prompt || defaultPrompt),
           extraPrompts,
+          okfEnabled,
+          okfOptions,
           settings: effectiveSettings,
           userId: user.id,
           status: "queued",

@@ -96,6 +96,14 @@ export function registerRoutes(app, ctx) {
     return path.join(OUTPUT_DIR, path.basename(urlPath));
   }
 
+  function outputFileExtension(file) {
+    const fromField = String(file?.extension || "").trim();
+    if (/^\.[A-Za-z0-9]{1,8}$/.test(fromField)) return fromField.toLowerCase();
+    const fromUrl = path.extname(decodeURIComponent(file?.url || ""));
+    if (/^\.[A-Za-z0-9]{1,8}$/.test(fromUrl)) return fromUrl.toLowerCase();
+    return ".docx";
+  }
+
   function syncJobReviewFromRun(job, run) {
     job.reviewStatus = run.status;
     job.reviewRiskLevel = run.riskLevel;
@@ -276,6 +284,17 @@ export function registerRoutes(app, ctx) {
       changed = true;
     }
     return changed ? store.listTemplates(userId) : templates;
+  }
+
+  function normalizeOkfOptions(input = {}) {
+    const tags = Array.isArray(input.tags)
+      ? input.tags
+      : String(input.tags || "").split(/[,，\s]+/);
+    return {
+      owner: String(input.owner || "").trim().slice(0, 80),
+      version: String(input.version || "1.0").trim().slice(0, 40) || "1.0",
+      tags: tags.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 20)
+    };
   }
 
   app.get("/api/templates", requireAuth, (req, res) => {
@@ -482,6 +501,8 @@ export function registerRoutes(app, ctx) {
   app.post("/api/jobs", requireAuth, (req, res) => {
     const { links = [], prompt = defaultPrompt, extraPrompts = [], settings = {}, concurrency = 5 } = req.body || {};
     const formatRequirement = String(req.body?.formatRequirement || "").trim().slice(0, 12000);
+    const okfEnabled = Boolean(req.body?.okfEnabled);
+    const okfOptions = normalizeOkfOptions(req.body?.okfOptions || {});
     const savedConfig = store.getUserSettings(req.user.id);
     if (!savedConfig) return res.status(400).json({ error: "请先到“模型配置”保存当前账号的模型配置。" });
     const effectiveSettings = savedConfig
@@ -512,6 +533,8 @@ export function registerRoutes(app, ctx) {
         prompt,
         extraPrompts,
         formatRequirement,
+        okfEnabled,
+        okfOptions,
         settings: effectiveSettings,
         userId: req.user.id,
         status: "queued",
@@ -682,7 +705,8 @@ export function registerRoutes(app, ctx) {
     const file = (job.outputFiles || [])[index];
     const filePath = storedOutputFilePath(file);
     if (!filePath || !fs.existsSync(filePath)) return res.status(404).json({ error: "文件不存在。" });
-    res.download(filePath, `${String(job.order + 1).padStart(2, "0")}_${safeName(job.outputBaseTitle || job.title)}_${safeName(file.label)}.docx`);
+    const ext = outputFileExtension(file);
+    res.download(filePath, `${String(job.order + 1).padStart(2, "0")}_${safeName(job.outputBaseTitle || job.title)}_${safeName(file.label)}${ext}`);
   });
 
   app.post("/api/jobs/:id/retry-extra", requireAuth, (req, res) => {
@@ -748,14 +772,15 @@ export function registerRoutes(app, ctx) {
         const urlPath = decodeURIComponent(output.url || "").replace(/^\/outputs\//, "");
         const filePath = path.join(OUTPUT_DIR, path.basename(urlPath));
         if (fs.existsSync(filePath)) {
+          const ext = outputFileExtension(output);
           files.push({
             filePath,
-            name: `${String(job.order + 1).padStart(2, "0")}_${safeName(job.outputBaseTitle || job.title)}_${safeName(output.label)}.docx`
+            name: `${String(job.order + 1).padStart(2, "0")}_${safeName(job.outputBaseTitle || job.title)}_${safeName(output.label)}${ext}`
           });
         }
       }
     }
-    if (!files.length) return res.status(404).json({ error: "暂无可下载的 Word 文件" });
+    if (!files.length) return res.status(404).json({ error: "暂无可下载的生成文件" });
 
     res.attachment(`video-to-word-${Date.now()}.zip`);
     const archive = createZipArchive({ zlib: { level: 9 } });

@@ -1,10 +1,10 @@
 {
   "name": "baidu-video-to-word",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Batch transcribe direct, page and cloud-drive videos into Word documents with ASR and OpenAI-compatible LLMs.",
   "private": false,
   "type": "module",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "homepage": "https://github.com/joyrayai/v2w#readme",
   "repository": {
     "type": "git",

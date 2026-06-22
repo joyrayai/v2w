@@ -223,18 +223,31 @@ function defaultWorkDraft() {
     bulkText: "",
     docs: [],
     formatEnabled: false,
-    formatRequirement: ""
+    formatRequirement: "",
+    okfEnabled: false,
+    okfOptions: {
+      owner: "",
+      version: "1.0",
+      tags: ""
+    }
   };
 }
 
 function normalizeWorkDraft(saved) {
   const defaults = defaultWorkDraft();
+  const okfOptions = saved?.okfOptions || {};
   return {
     links: Array.isArray(saved?.links) && saved.links.length ? saved.links : defaults.links,
     bulkText: typeof saved?.bulkText === "string" ? saved.bulkText : defaults.bulkText,
     docs: Array.isArray(saved?.docs) ? saved.docs : defaults.docs,
     formatEnabled: Boolean(saved?.formatEnabled),
-    formatRequirement: typeof saved?.formatRequirement === "string" ? saved.formatRequirement : defaults.formatRequirement
+    formatRequirement: typeof saved?.formatRequirement === "string" ? saved.formatRequirement : defaults.formatRequirement,
+    okfEnabled: Boolean(saved?.okfEnabled),
+    okfOptions: {
+      owner: typeof okfOptions.owner === "string" ? okfOptions.owner : defaults.okfOptions.owner,
+      version: typeof okfOptions.version === "string" ? okfOptions.version : defaults.okfOptions.version,
+      tags: Array.isArray(okfOptions.tags) ? okfOptions.tags.join(", ") : typeof okfOptions.tags === "string" ? okfOptions.tags : defaults.okfOptions.tags
+    }
   };
 }
 
@@ -1048,13 +1061,14 @@ function LinkBuilder({ title, desc, placeholder, links, setLinks, bulkText, setB
   );
 }
 
-function ExtraDocs({ docs, setDocs }) {
+function ExtraDocs({ docs, setDocs, embedded = false }) {
   const [templates, setTemplates] = useState([]);
   const [templateError, setTemplateError] = useState("");
   const [templateSaving, setTemplateSaving] = useState(false);
   const [templateSavingIndex, setTemplateSavingIndex] = useState(-1);
   const [templateDeletingId, setTemplateDeletingId] = useState("");
   const [openTemplateIndex, setOpenTemplateIndex] = useState(-1);
+  const [expanded, setExpanded] = useState(false);
   const [templateModal, setTemplateModal] = useState({ open: false, targetIndex: -1, title: "", prompt: "" });
   const smartTitleEnabled = docs.some((doc) => doc.smartTitle);
   const setSmartTitleEnabled = (enabled) => {
@@ -1069,6 +1083,7 @@ function ExtraDocs({ docs, setDocs }) {
       formatEnabled: false,
       formatRequirement: ""
     }]);
+    setExpanded(true);
   };
   const loadTemplates = async () => {
     setTemplateError("");
@@ -1214,13 +1229,16 @@ function ExtraDocs({ docs, setDocs }) {
       setTemplateSaving(false);
     }
   };
+  const Container = embedded ? "div" : "section";
+  const docSummary = docs.length ? `已配置 ${docs.length} 个额外文件` : "不需要额外版本时保持为空";
+
   return (
     <>
-      <section className="panel">
-        <div className="panelHead">
+      <Container className={embedded ? "extraDocsEmbedded" : "panel"}>
+        <div className={embedded ? "extraDocsHead" : "panelHead"}>
           <div>
             <h2>额外文件</h2>
-            <p>选择模板后生成扩写、问答、大纲或其他版本。</p>
+            <p>选择模板后生成扩写、问答、大纲或其他版本。{embedded ? ` ${docSummary}。` : ""}</p>
           </div>
           <div className="panelActions">
             {docs.length > 0 && (
@@ -1229,11 +1247,18 @@ function ExtraDocs({ docs, setDocs }) {
                 生成后统一命名
               </label>
             )}
+            {embedded && docs.length > 0 && (
+              <button type="button" className="btn" onClick={() => setExpanded((value) => !value)}>
+                {expanded ? "收起" : "展开"}
+              </button>
+            )}
             <button className="btn" onClick={addDoc}><Plus size={16} />添加</button>
           </div>
         </div>
         {!templateModal.open && templateError && <div className="inlineError">{templateError}</div>}
-        {docs.length === 0 && <div className="empty compact">不需要额外版本时保持为空。</div>}
+        {docs.length === 0 && !embedded && <div className="empty compact">不需要额外版本时保持为空。</div>}
+        {embedded && docs.length > 0 && !expanded && <div className="outputHint">额外文件已折叠，提交时会一起生成。</div>}
+        {(!embedded || expanded) && (
         <div className="docRows">
           {docs.map((doc, index) => (
             <div className="docRow" key={index}>
@@ -1327,7 +1352,8 @@ function ExtraDocs({ docs, setDocs }) {
             </div>
           ))}
         </div>
-      </section>
+        )}
+      </Container>
 
       {templateModal.open && (
         <div className="modalOverlay" role="presentation" onMouseDown={(event) => {
@@ -1362,8 +1388,8 @@ function ExtraDocs({ docs, setDocs }) {
 
 function OutputFormatPanel({ enabled, setEnabled, value, setValue }) {
   return (
-    <section className="panel formatPanel">
-      <div className="panelHead formatHead">
+    <div className="outputSetting formatPanel">
+      <div className="outputSettingHead formatHead">
         <div>
           <h2>输出格式</h2>
           <p>需要统一格式时开启，会随额外文件提示词一起发送给 AI。</p>
@@ -1382,7 +1408,7 @@ function OutputFormatPanel({ enabled, setEnabled, value, setValue }) {
           />
         </label>
       </div>
-    </section>
+    </div>
   );
 }
 
@@ -1527,7 +1553,8 @@ function JobList({ jobs, onDelete, onRetry, onRetryExtra, onRetryReview, queueSt
     try {
       const res = await apiFetch(file.url);
       if (!res.ok) throw new Error(await readErrorResponse(res, "文件下载失败"));
-      await saveBlobResponse(res, `${file.label || "文件"}.docx`);
+      const fallbackExt = file.extension || (file.type === "okf" ? ".zip" : ".docx");
+      await saveBlobResponse(res, `${file.label || "文件"}${fallbackExt}`);
     } catch (err) {
       setDownloadError(err.message || "文件下载失败，请稍后重试。");
     } finally {
@@ -1638,6 +1665,117 @@ function JobList({ jobs, onDelete, onRetry, onRetryExtra, onRetryReview, queueSt
   );
 }
 
+function OkfPanel({ enabled, setEnabled, options, setOptions }) {
+  function patchOptions(patch) {
+    setOptions((old) => ({ ...old, ...patch }));
+  }
+
+  return (
+    <div className="outputSetting okfPanel">
+      <div className="outputSettingHead formatHead">
+        <div>
+          <h2>OKF 知识格式</h2>
+          <p>生成 Markdown 知识资产 ZIP，便于 Agent、RAG 和知识库复用。</p>
+        </div>
+        <label className="checkLine inline formatToggle">
+          <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
+          <span>生成 OKF</span>
+        </label>
+      </div>
+      {enabled && (
+        <div className="okfBody open">
+          <div className="okfHint">
+            <span>输出目录包含 knowledge/rules、knowledge/metrics、knowledge/sop 和 manifest.json。</span>
+          </div>
+          <details className="okfAdvanced">
+            <summary>高级设置</summary>
+            <div className="okfFields">
+              <label className="field">负责人
+                <input value={options.owner || ""} onChange={(event) => patchOptions({ owner: event.target.value })} placeholder="例如：销售管理部 / AI 中台" />
+              </label>
+              <label className="field">版本
+                <input value={options.version || ""} onChange={(event) => patchOptions({ version: event.target.value })} placeholder="1.0" />
+              </label>
+              <label className="field full">标签
+                <input value={options.tags || ""} onChange={(event) => patchOptions({ tags: event.target.value })} placeholder="用逗号分隔，例如：制度, 销售, SOP" />
+              </label>
+            </div>
+          </details>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OutputSettings({
+  docs,
+  setDocs,
+  formatEnabled,
+  setFormatEnabled,
+  formatRequirement,
+  setFormatRequirement,
+  okfEnabled,
+  setOkfEnabled,
+  okfOptions,
+  setOkfOptions,
+  canStart,
+  submitState,
+  onSubmit,
+  linkCount
+}) {
+  const outputSummary = [
+    "Word 文档默认生成",
+    okfEnabled ? "OKF ZIP" : "",
+    docs.length ? `${docs.length} 个额外文件` : "",
+    formatEnabled ? "已填写格式要求" : ""
+  ].filter(Boolean).join(" · ");
+
+  return (
+    <section className="panel outputSettings">
+      <div className="panelHead outputSettingsHead">
+        <div>
+          <h2>输出设置</h2>
+          <p>{outputSummary}</p>
+        </div>
+      </div>
+
+      <div className="defaultOutput">
+        <FileText size={18} />
+        <div>
+          <strong>Word 文档</strong>
+          <span>默认输出，保持现有下载和审查流程。</span>
+        </div>
+      </div>
+
+      <div className="outputSettingsGrid">
+        <OutputFormatPanel
+          enabled={formatEnabled}
+          setEnabled={setFormatEnabled}
+          value={formatRequirement}
+          setValue={setFormatRequirement}
+        />
+        <OkfPanel
+          enabled={okfEnabled}
+          setEnabled={setOkfEnabled}
+          options={okfOptions}
+          setOptions={setOkfOptions}
+        />
+        <ExtraDocs docs={docs} setDocs={setDocs} embedded />
+      </div>
+
+      <div className="submitBar">
+        <div>
+          <strong>准备提交</strong>
+          <span>{linkCount ? `${linkCount} 个来源会加入任务队列` : "先添加至少一个链接"}</span>
+        </div>
+        <button className="primary" disabled={!canStart || submitState.loading} onClick={onSubmit}>
+          <Play size={17} />{submitState.loading ? "提交中" : "开始转写"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function NetdiskStatusBar({ onGoConfig }) {
   const [statuses, setStatuses] = useState({ baidu: null, quark: null });
   const [loading, setLoading] = useState(true);
@@ -1677,6 +1815,31 @@ function NetdiskStatusBar({ onGoConfig }) {
   );
 }
 
+function RoadmapNotice() {
+  const items = [
+    { icon: <Mic size={15} />, text: "V2W 后续以性能优化、稳定性提升和 BUG 修复为主" },
+    { icon: <Layers size={15} />, text: "V2K 支持将 Word、视频、音频和结构化知识统一整理为 OKF" },
+    { icon: <Folder size={15} />, text: "V2K 将提供线上知识存储、统一管理和基础问答能力" }
+  ];
+  return (
+    <details className="roadmapNotice" aria-label="后续更新预告">
+      <summary className="roadmapNoticeHead">
+        <span>后续更新预告</span>
+        <strong>V2W 进入维护期，新能力将在 V2K 更新</strong>
+        <p>V2W 后续不再继续堆叠新功能，主要保障现有转写、Word 和 OKF 流程更快、更稳；新的知识管理能力会迁移到 V2K 平台。</p>
+      </summary>
+      <div className="roadmapNoticeItems">
+        {items.map((item) => (
+          <span key={item.text}>
+            {item.icon}
+            {item.text}
+          </span>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 function WorkPage({ mode, providerState, oss, jobs, setJobs, queueState, onDelete, onRetry, onRetryExtra, onRetryReview, onResume, onGoConfig }) {
   const draftKey = `${WORK_DRAFT_KEY_PREFIX}-${mode}`;
   const initialDraft = useMemo(() => normalizeWorkDraft(readJson(draftKey, null)), [draftKey]);
@@ -1685,21 +1848,24 @@ function WorkPage({ mode, providerState, oss, jobs, setJobs, queueState, onDelet
   const [docs, setDocs] = useState(initialDraft.docs);
   const [formatEnabled, setFormatEnabled] = useState(initialDraft.formatEnabled);
   const [formatRequirement, setFormatRequirement] = useState(initialDraft.formatRequirement);
+  const [okfEnabled, setOkfEnabled] = useState(initialDraft.okfEnabled);
+  const [okfOptions, setOkfOptions] = useState(initialDraft.okfOptions);
   const [submitState, setSubmitState] = useState({ loading: false, message: "", error: "" });
   const jobSectionRef = useRef(null);
   const isCloud = mode === "cloud";
-  const canStart = links.some((item) => item.link.trim());
+  const linkCount = links.filter((item) => item.link.trim()).length;
+  const canStart = linkCount > 0;
 
   useEffect(() => {
-    localStorage.setItem(draftKey, JSON.stringify({ links, bulkText, docs, formatEnabled, formatRequirement }));
-  }, [draftKey, links, bulkText, docs, formatEnabled, formatRequirement]);
+    localStorage.setItem(draftKey, JSON.stringify({ links, bulkText, docs, formatEnabled, formatRequirement, okfEnabled, okfOptions }));
+  }, [draftKey, links, bulkText, docs, formatEnabled, formatRequirement, okfEnabled, okfOptions]);
 
   useEffect(() => {
     setSubmitState((state) => {
       if (state.loading || (!state.error && !state.message)) return state;
       return { loading: false, message: "", error: "" };
     });
-  }, [links, bulkText, docs, formatEnabled, formatRequirement, mode]);
+  }, [links, bulkText, docs, formatEnabled, formatRequirement, okfEnabled, okfOptions, mode]);
 
   async function submit() {
     const normalizedLinks = links
@@ -1723,6 +1889,8 @@ function WorkPage({ mode, providerState, oss, jobs, setJobs, queueState, onDelet
           links: validLinks,
           extraPrompts: docs,
           formatRequirement: formatEnabled ? formatRequirement : "",
+          okfEnabled,
+          okfOptions,
           concurrency: 5,
           settings: buildJobRuntimeSettings(!isCloud)
         })
@@ -1746,19 +1914,11 @@ function WorkPage({ mode, providerState, oss, jobs, setJobs, queueState, onDelet
     <>
       <section className="pageHeader">
         <div className="pageHeaderText">
-          <span>{isCloud ? "网盘任务" : "直链任务"}</span>
-          <h1>{isCloud ? "网盘视频转 Word" : "直链视频转 Word"}</h1>
-          <p>{isCloud ? "粘贴百度网盘或夸克网盘分享链接，批量生成 Word 文件。" : "粘贴音视频直链或可解析的视频页面，批量生成 Word 文件。"}</p>
-          <div className="featurePills" aria-label="文档生成功能">
-            <span>逐字稿</span>
-            <span>额外文件</span>
-            <span>按格式要求渲染 Word</span>
-            <span>企业审查（可选）</span>
-          </div>
+          <span>{isCloud ? "网盘来源" : "直链来源"}</span>
+          <h1>新建任务</h1>
+          <p>{isCloud ? "粘贴百度网盘或夸克网盘分享链接，选择输出内容后加入队列。" : "粘贴音视频直链或可解析的视频页面，选择输出内容后加入队列。"}</p>
         </div>
-        <button className="primary" disabled={!canStart || submitState.loading} onClick={submit}>
-          <Play size={17} />{submitState.loading ? "提交中" : "开始转写"}
-        </button>
+        <div className="headerModeBadge">{isCloud ? "网盘任务" : "直链任务"}</div>
       </section>
 
       {isCloud && <NetdiskStatusBar onGoConfig={onGoConfig} />}
@@ -1779,16 +1939,26 @@ function WorkPage({ mode, providerState, oss, jobs, setJobs, queueState, onDelet
         setBulkText={setBulkText}
         showMove={!isCloud}
       />
-      <ExtraDocs docs={docs} setDocs={setDocs} />
-      <OutputFormatPanel
-        enabled={formatEnabled}
-        setEnabled={setFormatEnabled}
-        value={formatRequirement}
-        setValue={setFormatRequirement}
+      <OutputSettings
+        docs={docs}
+        setDocs={setDocs}
+        formatEnabled={formatEnabled}
+        setFormatEnabled={setFormatEnabled}
+        formatRequirement={formatRequirement}
+        setFormatRequirement={setFormatRequirement}
+        okfEnabled={okfEnabled}
+        setOkfEnabled={setOkfEnabled}
+        okfOptions={okfOptions}
+        setOkfOptions={setOkfOptions}
+        canStart={canStart}
+        submitState={submitState}
+        onSubmit={submit}
+        linkCount={linkCount}
       />
       <div ref={jobSectionRef}>
         <JobList jobs={jobs} onDelete={onDelete} onRetry={onRetry} onRetryExtra={onRetryExtra} onRetryReview={onRetryReview} queueState={queueState} onResume={onResume} />
       </div>
+      <RoadmapNotice />
     </>
   );
 }
@@ -1927,6 +2097,300 @@ function UsagePage({ user }) {
       </section>
     </>
   );
+}
+
+function AdminUsersPanel({
+  users,
+  resetUserId,
+  setResetUserId,
+  resetPassword,
+  setResetPassword,
+  resetMessage,
+  onResetPassword,
+  onToggleReviewEntitlement
+}) {
+  return (
+    <>
+      <div className="usageTable adminUsersTable">
+        <div className="usageTableHead">
+          <span>账号</span><span>身份</span><span>任务</span><span>本期用量</span><span>审查服务</span><span>创建时间</span>
+        </div>
+        {users.length === 0 && <div className="usageEmpty">暂无账号。</div>}
+        {users.map((item) => (
+          <div className="usageTableRow" key={item.id}>
+            <span title={item.username}>{item.username}</span>
+            <span>{item.isAdmin ? "管理员" : item.provider || "password"}</span>
+            <span>总 {item.jobs?.total || 0} · 完成 {item.jobs?.done || 0} · 失败 {item.jobs?.error || 0}</span>
+            <span>{formatJobUsage(item.usage || {})}</span>
+            <span>
+              <button type="button" className={`miniSwitch ${item.reviewEnabled ? "on" : ""}`} onClick={() => onToggleReviewEntitlement(item.id, !item.reviewEnabled)}>
+                {item.reviewEnabled ? "已启用" : "未启用"}
+              </button>
+            </span>
+            <span>{item.createdAt ? new Date(item.createdAt).toLocaleString("zh-CN", { hour12: false }) : "-"}</span>
+          </div>
+        ))}
+      </div>
+
+      <form className="adminResetForm tile" onSubmit={onResetPassword}>
+        <label className="field">选择账号
+          <select value={resetUserId} onChange={(e) => setResetUserId(e.target.value)}>
+            <option value="">选择要重置密码的账号</option>
+            {users.filter((item) => item.provider === "password").map((item) => (
+              <option key={item.id} value={item.id}>{item.username}</option>
+            ))}
+          </select>
+        </label>
+        <label className="field">新密码
+          <input type="password" value={resetPassword} onChange={(e) => setResetPassword(e.target.value)} placeholder="至少 6 位" />
+        </label>
+        <button className="primary compactPrimary" disabled={!resetUserId || resetPassword.length < 6}>重置密码</button>
+        {resetMessage && <span className="adminOk">{resetMessage}</span>}
+      </form>
+    </>
+  );
+}
+
+function AdminUsagePanel({ summary, records }) {
+  const modelRows = summary?.byModel || [];
+  const userRows = summary?.byUser || [];
+
+  return (
+    <>
+      <div className="usageCards">
+        <div className="usageCard">
+          <span>ASR 音频时长</span>
+          <strong>{formatSeconds(summary?.asrSeconds || 0)}</strong>
+        </div>
+        <div className="usageCard">
+          <span>AI 用量</span>
+          <strong>{formatNumber(summary?.llmTokens || 0)}</strong>
+        </div>
+        <div className="usageCard">
+          <span>调用记录</span>
+          <strong>{formatNumber(summary?.records || 0)}</strong>
+        </div>
+        <div className="usageCard">
+          <span>预估成本</span>
+          <strong>{formatUsageCost(summary)}</strong>
+        </div>
+      </div>
+
+      <div className="usageTable adminUsageUsers">
+        <div className="usageTableHead">
+          <span>账号</span><span>ASR</span><span>AI 用量</span><span>记录</span><span>成本</span>
+        </div>
+        {userRows.length === 0 && <div className="usageEmpty">暂无用户用量。</div>}
+        {userRows.map((row) => (
+          <div className="usageTableRow" key={row.id}>
+            <span>{row.username}</span>
+            <span>{formatSeconds(row.asrSeconds)}</span>
+            <span>{formatNumber(row.llmTokens)}</span>
+            <span>{formatNumber(row.records)}</span>
+            <span>{formatUsageCost(row)}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="usageTable">
+        <div className="usageTableHead">
+          <span>类型</span><span>服务商</span><span>模型</span><span>用量</span><span>成本</span>
+        </div>
+        {modelRows.length === 0 && <div className="usageEmpty">暂无模型用量。</div>}
+        {modelRows.map((row, index) => (
+          <div className="usageTableRow" key={`${row.type}-${row.provider}-${row.model}-${index}`}>
+            <span>{row.type === "asr" ? "ASR" : "AI 处理"}</span>
+            <span>{row.provider || "-"}</span>
+            <span>{row.model || "-"}</span>
+            <span>{row.type === "asr" ? formatSeconds(row.metricValue) : `${formatNumber(row.totalTokens)} tokens`}</span>
+            <span>{formatCost(row.estimatedCost)}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="usageTable adminUsageRecords">
+        <div className="usageTableHead">
+          <span>时间</span><span>账号</span><span>任务</span><span>类型</span><span>模型</span><span>用量</span>
+        </div>
+        {records.length === 0 && <div className="usageEmpty">暂无用量明细。</div>}
+        {records.map((record) => (
+          <div className="usageTableRow" key={record.id}>
+            <span>{new Date(record.createdAt).toLocaleString("zh-CN", { hour12: false })}</span>
+            <span>{record.username || "-"}</span>
+            <span>{record.jobTitle || "-"}</span>
+            <span>{record.type === "asr" ? "ASR" : "AI 处理"}</span>
+            <span>{record.model || "-"}</span>
+            <span>{record.type === "asr" ? formatSeconds(record.metricValue) : `${formatNumber(record.totalTokens)} tokens`}</span>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function AdminReviewRulesPanel({
+  reviewRuleName,
+  setReviewRuleName,
+  reviewRuleVersion,
+  setReviewRuleVersion,
+  reviewRuleDraft,
+  setReviewRuleDraft,
+  reviewRulePacks,
+  onImportRulePack,
+  onActivateRulePack
+}) {
+  return (
+    <div className="adminReviewGrid">
+      <div className="tile adminReviewForm">
+        <label className="field">规则包名称
+          <input value={reviewRuleName} onChange={(e) => setReviewRuleName(e.target.value)} placeholder="例如：医药合规审查规则" />
+        </label>
+        <label className="field">版本
+          <input value={reviewRuleVersion} onChange={(e) => setReviewRuleVersion(e.target.value)} placeholder="例如：2026-06" />
+        </label>
+        <label className="field full">Markdown 规则
+          <textarea value={reviewRuleDraft} onChange={(e) => setReviewRuleDraft(e.target.value)} placeholder="# 规则包名称&#10;version: 2026-06&#10;&#10;## 高风险&#10;- ..." />
+        </label>
+        <button type="button" className="primary compactPrimary" onClick={onImportRulePack} disabled={!reviewRuleDraft.trim()}>导入规则包</button>
+      </div>
+      <div className="usageTable adminRuleTable">
+        <div className="usageTableHead">
+          <span>名称</span><span>版本</span><span>状态</span><span>创建时间</span><span>操作</span>
+        </div>
+        {reviewRulePacks.length === 0 && <div className="usageEmpty">暂无规则包。</div>}
+        {reviewRulePacks.map((pack) => (
+          <div className="usageTableRow" key={pack.id}>
+            <span title={pack.name}>{pack.name}</span>
+            <span>{pack.version || "-"}</span>
+            <span>{pack.active ? "当前启用" : "未启用"}</span>
+            <span>{pack.createdAt ? new Date(pack.createdAt).toLocaleString("zh-CN", { hour12: false }) : "-"}</span>
+            <span><button type="button" className="miniSwitch on" disabled={pack.active} onClick={() => onActivateRulePack(pack.id)}>{pack.active ? "已启用" : "启用"}</button></span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AdminReviewConfigPanel({
+  reviewConfig,
+  setReviewConfig,
+  onTestReviewModel,
+  onSaveReviewConfig
+}) {
+  return (
+    <div className="tile adminReviewForm">
+      <label className="checkLine">
+        <input type="checkbox" checked={Boolean(reviewConfig.enabled)} onChange={(e) => setReviewConfig((old) => ({ ...old, enabled: e.target.checked }))} />
+        启用企业审查模型
+      </label>
+      <label className="field">API Key
+        <input type="password" value={reviewConfig.apiKey || ""} onChange={(e) => setReviewConfig((old) => ({ ...old, apiKey: e.target.value }))} placeholder={reviewConfig.apiKey ? "已配置，留空不改" : "sk-..."} />
+      </label>
+      <label className="field">Base URL
+        <input value={reviewConfig.baseUrl || ""} onChange={(e) => setReviewConfig((old) => ({ ...old, baseUrl: e.target.value }))} placeholder="https://.../v1" />
+      </label>
+      <label className="field">模型
+        <input value={reviewConfig.model || ""} onChange={(e) => setReviewConfig((old) => ({ ...old, model: e.target.value }))} placeholder="例如：qwen-max" />
+      </label>
+      <label className="field">上下文预算 tokens
+        <input type="number" min="10000" max="2000000" value={reviewConfig.contextLimitTokens || 1000000} onChange={(e) => setReviewConfig((old) => ({ ...old, contextLimitTokens: e.target.value }))} />
+      </label>
+      <div className="adminReviewActions">
+        <button type="button" className="btn" onClick={onTestReviewModel}>测试连接</button>
+        <button type="button" className="primary compactPrimary" onClick={onSaveReviewConfig}>保存配置</button>
+      </div>
+    </div>
+  );
+}
+
+function AdminReviewManagePanel({
+  reviewRuns,
+  overrideReasons,
+  setOverrideReasons,
+  onOverrideReview
+}) {
+  return (
+    <div className="usageTable adminReviewRuns">
+      <div className="usageTableHead">
+        <span>任务</span><span>状态</span><span>风险</span><span>模型</span><span>放行理由</span><span>操作</span>
+      </div>
+      {reviewRuns.length === 0 && <div className="usageEmpty">暂无待放行任务。</div>}
+      {reviewRuns.map((run) => (
+        <div className="usageTableRow" key={run.id}>
+          <span title={run.jobId}>{run.jobId}</span>
+          <span>{run.status || "-"}</span>
+          <span>{REVIEW_RISK_LABELS[run.riskLevel] || run.riskLevel || "-"}</span>
+          <span>{run.model || "-"}</span>
+          <span>
+            <input
+              className="inlineInput"
+              value={overrideReasons[run.jobId] || ""}
+              onChange={(e) => setOverrideReasons((old) => ({ ...old, [run.jobId]: e.target.value }))}
+              placeholder="填写放行理由"
+            />
+          </span>
+          <span><button type="button" className="miniSwitch danger" onClick={() => onOverrideReview(run.jobId)}>放行</button></span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AdminPanelContent(props) {
+  if (props.section === "users") {
+    return (
+      <AdminUsersPanel
+        users={props.users}
+        resetUserId={props.resetUserId}
+        setResetUserId={props.setResetUserId}
+        resetPassword={props.resetPassword}
+        setResetPassword={props.setResetPassword}
+        resetMessage={props.resetMessage}
+        onResetPassword={props.onResetPassword}
+        onToggleReviewEntitlement={props.onToggleReviewEntitlement}
+      />
+    );
+  }
+  if (props.section === "usage") {
+    return <AdminUsagePanel summary={props.summary} records={props.records} />;
+  }
+  if (props.section === "reviewRules") {
+    return (
+      <AdminReviewRulesPanel
+        reviewRuleName={props.reviewRuleName}
+        setReviewRuleName={props.setReviewRuleName}
+        reviewRuleVersion={props.reviewRuleVersion}
+        setReviewRuleVersion={props.setReviewRuleVersion}
+        reviewRuleDraft={props.reviewRuleDraft}
+        setReviewRuleDraft={props.setReviewRuleDraft}
+        reviewRulePacks={props.reviewRulePacks}
+        onImportRulePack={props.onImportRulePack}
+        onActivateRulePack={props.onActivateRulePack}
+      />
+    );
+  }
+  if (props.section === "reviewConfig") {
+    return (
+      <AdminReviewConfigPanel
+        reviewConfig={props.reviewConfig}
+        setReviewConfig={props.setReviewConfig}
+        onTestReviewModel={props.onTestReviewModel}
+        onSaveReviewConfig={props.onSaveReviewConfig}
+      />
+    );
+  }
+  if (props.section === "reviewManage") {
+    return (
+      <AdminReviewManagePanel
+        reviewRuns={props.reviewRuns}
+        overrideReasons={props.overrideReasons}
+        setOverrideReasons={props.setOverrideReasons}
+        onOverrideReview={props.onOverrideReview}
+      />
+    );
+  }
+  return <div className="usageEmpty">请选择管理功能。</div>;
 }
 
 function AdminPage() {
@@ -2117,9 +2581,6 @@ function AdminPage() {
     }
   }
 
-  const modelRows = summary?.byModel || [];
-  const userRows = summary?.byUser || [];
-
   return (
     <>
       <section className="configTop panel">
@@ -2149,197 +2610,36 @@ function AdminPage() {
         {error && <div className="inlineError">{error}</div>}
         {reviewMessage && <div className="adminOk">{reviewMessage}</div>}
 
-        {section === "users" ? (
-          <>
-            <div className="usageTable adminUsersTable">
-              <div className="usageTableHead">
-                <span>账号</span><span>身份</span><span>任务</span><span>本期用量</span><span>审查服务</span><span>创建时间</span>
-              </div>
-              {users.length === 0 && <div className="usageEmpty">暂无账号。</div>}
-              {users.map((item) => (
-                <div className="usageTableRow" key={item.id}>
-                  <span title={item.username}>{item.username}</span>
-                  <span>{item.isAdmin ? "管理员" : item.provider || "password"}</span>
-                  <span>总 {item.jobs?.total || 0} · 完成 {item.jobs?.done || 0} · 失败 {item.jobs?.error || 0}</span>
-                  <span>{formatJobUsage(item.usage || {})}</span>
-                  <span>
-                    <button className={`miniSwitch ${item.reviewEnabled ? "on" : ""}`} onClick={() => toggleReviewEntitlement(item.id, !item.reviewEnabled)}>
-                      {item.reviewEnabled ? "已启用" : "未启用"}
-                    </button>
-                  </span>
-                  <span>{item.createdAt ? new Date(item.createdAt).toLocaleString("zh-CN", { hour12: false }) : "-"}</span>
-                </div>
-              ))}
-            </div>
-
-            <form className="adminResetForm tile" onSubmit={resetPasswordForUser}>
-              <label className="field">选择账号
-                <select value={resetUserId} onChange={(e) => setResetUserId(e.target.value)}>
-                  <option value="">选择要重置密码的账号</option>
-                  {users.filter((item) => item.provider === "password").map((item) => (
-                    <option key={item.id} value={item.id}>{item.username}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="field">新密码
-                <input type="password" value={resetPassword} onChange={(e) => setResetPassword(e.target.value)} placeholder="至少 6 位" />
-              </label>
-              <button className="primary compactPrimary" disabled={!resetUserId || resetPassword.length < 6}>重置密码</button>
-              {resetMessage && <span className="adminOk">{resetMessage}</span>}
-            </form>
-          </>
-        ) : section === "usage" ? (
-          <>
-            <div className="usageCards">
-              <div className="usageCard">
-                <span>ASR 音频时长</span>
-                <strong>{formatSeconds(summary?.asrSeconds || 0)}</strong>
-              </div>
-              <div className="usageCard">
-                <span>AI 用量</span>
-                <strong>{formatNumber(summary?.llmTokens || 0)}</strong>
-              </div>
-              <div className="usageCard">
-                <span>调用记录</span>
-                <strong>{formatNumber(summary?.records || 0)}</strong>
-              </div>
-              <div className="usageCard">
-                <span>预估成本</span>
-                <strong>{formatUsageCost(summary)}</strong>
-              </div>
-            </div>
-
-            <div className="usageTable adminUsageUsers">
-              <div className="usageTableHead">
-                <span>账号</span><span>ASR</span><span>AI 用量</span><span>记录</span><span>成本</span>
-              </div>
-              {userRows.length === 0 && <div className="usageEmpty">暂无用户用量。</div>}
-              {userRows.map((row) => (
-                <div className="usageTableRow" key={row.id}>
-                  <span>{row.username}</span>
-                  <span>{formatSeconds(row.asrSeconds)}</span>
-                  <span>{formatNumber(row.llmTokens)}</span>
-                  <span>{formatNumber(row.records)}</span>
-                  <span>{formatUsageCost(row)}</span>
-                </div>
-              ))}
-            </div>
-
-            <div className="usageTable">
-              <div className="usageTableHead">
-                <span>类型</span><span>服务商</span><span>模型</span><span>用量</span><span>成本</span>
-              </div>
-              {modelRows.length === 0 && <div className="usageEmpty">暂无模型用量。</div>}
-              {modelRows.map((row, index) => (
-                <div className="usageTableRow" key={`${row.type}-${row.provider}-${row.model}-${index}`}>
-                  <span>{row.type === "asr" ? "ASR" : "AI 处理"}</span>
-                  <span>{row.provider || "-"}</span>
-                  <span>{row.model || "-"}</span>
-                  <span>{row.type === "asr" ? formatSeconds(row.metricValue) : `${formatNumber(row.totalTokens)} tokens`}</span>
-                  <span>{formatCost(row.estimatedCost)}</span>
-                </div>
-              ))}
-            </div>
-
-            <div className="usageTable adminUsageRecords">
-              <div className="usageTableHead">
-                <span>时间</span><span>账号</span><span>任务</span><span>类型</span><span>模型</span><span>用量</span>
-              </div>
-              {records.length === 0 && <div className="usageEmpty">暂无用量明细。</div>}
-              {records.map((record) => (
-                <div className="usageTableRow" key={record.id}>
-                  <span>{new Date(record.createdAt).toLocaleString("zh-CN", { hour12: false })}</span>
-                  <span>{record.username || "-"}</span>
-                  <span>{record.jobTitle || "-"}</span>
-                  <span>{record.type === "asr" ? "ASR" : "AI 处理"}</span>
-                  <span>{record.model || "-"}</span>
-                  <span>{record.type === "asr" ? formatSeconds(record.metricValue) : `${formatNumber(record.totalTokens)} tokens`}</span>
-                </div>
-              ))}
-            </div>
-          </>
-        ) : section === "reviewRules" ? (
-          <>
-            <div className="adminReviewGrid">
-              <div className="tile adminReviewForm">
-                <label className="field">规则包名称
-                  <input value={reviewRuleName} onChange={(e) => setReviewRuleName(e.target.value)} placeholder="例如：医药合规审查规则" />
-                </label>
-                <label className="field">版本
-                  <input value={reviewRuleVersion} onChange={(e) => setReviewRuleVersion(e.target.value)} placeholder="例如：2026-06" />
-                </label>
-                <label className="field full">Markdown 规则
-                  <textarea value={reviewRuleDraft} onChange={(e) => setReviewRuleDraft(e.target.value)} placeholder="# 规则包名称&#10;version: 2026-06&#10;&#10;## 高风险&#10;- ..." />
-                </label>
-                <button className="primary compactPrimary" onClick={importRulePack} disabled={!reviewRuleDraft.trim()}>导入规则包</button>
-              </div>
-              <div className="usageTable adminRuleTable">
-                <div className="usageTableHead">
-                  <span>名称</span><span>版本</span><span>状态</span><span>创建时间</span><span>操作</span>
-                </div>
-                {reviewRulePacks.length === 0 && <div className="usageEmpty">暂无规则包。</div>}
-                {reviewRulePacks.map((pack) => (
-                  <div className="usageTableRow" key={pack.id}>
-                    <span title={pack.name}>{pack.name}</span>
-                    <span>{pack.version || "-"}</span>
-                    <span>{pack.active ? "当前启用" : "未启用"}</span>
-                    <span>{pack.createdAt ? new Date(pack.createdAt).toLocaleString("zh-CN", { hour12: false }) : "-"}</span>
-                    <span><button className="miniSwitch on" disabled={pack.active} onClick={() => activateRulePack(pack.id)}>{pack.active ? "已启用" : "启用"}</button></span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </>
-        ) : section === "reviewConfig" ? (
-          <div className="tile adminReviewForm">
-            <label className="checkLine">
-              <input type="checkbox" checked={Boolean(reviewConfig.enabled)} onChange={(e) => setReviewConfig((old) => ({ ...old, enabled: e.target.checked }))} />
-              启用企业审查模型
-            </label>
-            <label className="field">API Key
-              <input type="password" value={reviewConfig.apiKey || ""} onChange={(e) => setReviewConfig((old) => ({ ...old, apiKey: e.target.value }))} placeholder={reviewConfig.apiKey ? "已配置，留空不改" : "sk-..."} />
-            </label>
-            <label className="field">Base URL
-              <input value={reviewConfig.baseUrl || ""} onChange={(e) => setReviewConfig((old) => ({ ...old, baseUrl: e.target.value }))} placeholder="https://.../v1" />
-            </label>
-            <label className="field">模型
-              <input value={reviewConfig.model || ""} onChange={(e) => setReviewConfig((old) => ({ ...old, model: e.target.value }))} placeholder="例如：qwen-max" />
-            </label>
-            <label className="field">上下文预算 tokens
-              <input type="number" min="10000" max="2000000" value={reviewConfig.contextLimitTokens || 1000000} onChange={(e) => setReviewConfig((old) => ({ ...old, contextLimitTokens: e.target.value }))} />
-            </label>
-            <div className="adminReviewActions">
-              <button className="btn" onClick={testReviewModel}>测试连接</button>
-              <button className="primary compactPrimary" onClick={saveReviewConfig}>保存配置</button>
-            </div>
-          </div>
-        ) : section === "reviewManage" ? (
-          <div className="usageTable adminReviewRuns">
-            <div className="usageTableHead">
-              <span>任务</span><span>状态</span><span>风险</span><span>模型</span><span>放行理由</span><span>操作</span>
-            </div>
-            {reviewRuns.length === 0 && <div className="usageEmpty">暂无待放行任务。</div>}
-            {reviewRuns.map((run) => (
-              <div className="usageTableRow" key={run.id}>
-                <span title={run.jobId}>{run.jobId}</span>
-                <span>{run.status || "-"}</span>
-                <span>{REVIEW_RISK_LABELS[run.riskLevel] || run.riskLevel || "-"}</span>
-                <span>{run.model || "-"}</span>
-                <span>
-                  <input
-                    className="inlineInput"
-                    value={overrideReasons[run.jobId] || ""}
-                    onChange={(e) => setOverrideReasons((old) => ({ ...old, [run.jobId]: e.target.value }))}
-                    placeholder="填写放行理由"
-                  />
-                </span>
-                <span><button className="miniSwitch danger" onClick={() => overrideReview(run.jobId)}>放行</button></span>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="usageEmpty">请选择管理功能。</div>
-        )}
+        <AdminPanelContent
+          section={section}
+          users={users}
+          resetUserId={resetUserId}
+          setResetUserId={setResetUserId}
+          resetPassword={resetPassword}
+          setResetPassword={setResetPassword}
+          resetMessage={resetMessage}
+          onResetPassword={resetPasswordForUser}
+          onToggleReviewEntitlement={toggleReviewEntitlement}
+          summary={summary}
+          records={records}
+          reviewRuleName={reviewRuleName}
+          setReviewRuleName={setReviewRuleName}
+          reviewRuleVersion={reviewRuleVersion}
+          setReviewRuleVersion={setReviewRuleVersion}
+          reviewRuleDraft={reviewRuleDraft}
+          setReviewRuleDraft={setReviewRuleDraft}
+          reviewRulePacks={reviewRulePacks}
+          onImportRulePack={importRulePack}
+          onActivateRulePack={activateRulePack}
+          reviewConfig={reviewConfig}
+          setReviewConfig={setReviewConfig}
+          onTestReviewModel={testReviewModel}
+          onSaveReviewConfig={saveReviewConfig}
+          reviewRuns={reviewRuns}
+          overrideReasons={overrideReasons}
+          setOverrideReasons={setOverrideReasons}
+          onOverrideReview={overrideReview}
+        />
       </section>
     </>
   );
