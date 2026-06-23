@@ -2,12 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { nanoid } from "nanoid";
 import { APP_CONFIG, GIB, OUTPUT_DIR, SHELL, USAGE_PRICING, defaultPrompt } from "./config.js";
-import { hashPassword, normalizeUsername, signToken, validateUsername, verifyPassword } from "./auth.js";
+import { createLoginRateLimiter, hashPassword, normalizeUsername, signToken, validateUsername, verifyPassword } from "./auth.js";
 import { safeName } from "./utils.js";
 import { detectNetdiskProvider, unsupportedNetdiskMessage } from "./services/netdisk.js";
 import { publicUsageRecord, usageDateRange } from "./services/usage.js";
 import { testLlmConnection } from "./services/ai.js";
-import { normalizeUserSettings, settingsFromUserConfig } from "./services/settings.js";
+import { normalizeUserSettings, publicUserSettings, settingsFromUserConfig } from "./services/settings.js";
 import { DEFAULT_EXTRA_DOC_TEMPLATES } from "./defaults/templates.js";
 import {
   normalizeReviewConfig,
@@ -18,6 +18,13 @@ import {
   runDocumentReview,
   testReviewConfig
 } from "./services/review.js";
+import {
+  buildDeliveryContext,
+  deliverToTarget,
+  normalizeDeliveryTarget,
+  publicDeliveryRun,
+  publicDeliveryTarget
+} from "./services/delivery.js";
 
 export function registerRoutes(app, ctx) {
   const {
@@ -34,6 +41,7 @@ export function registerRoutes(app, ctx) {
     redactSecret,
     removeJobFiles,
     requireAuth,
+    retryJobDelivery,
     retryJobExtras,
     retryJob,
     runCommand,
@@ -48,6 +56,18 @@ export function registerRoutes(app, ctx) {
 
   function isAdmin(user) {
     return normalizeUsername(user?.username) === "admin";
+  }
+
+  const loginLimiter = createLoginRateLimiter();
+
+  function issueToken(user) {
+    const token = signToken(user);
+    store.saveAuthSession?.({
+      userId: user.id,
+      sessionVersion: Number(user.sessionVersion || 0),
+      expiresAt: new Date(Date.now() + APP_CONFIG.sessionTtlMs).toISOString()
+    });
+    return token;
   }
 
   function requireAdmin(req, res, next) {
@@ -155,7 +175,7 @@ export function registerRoutes(app, ctx) {
     };
     users.push(user);
     store.saveUser(user);
-    res.json({ token: signToken(user), user: publicUser(user) });
+    res.json({ token: issueToken(user), user: publicUser(user) });
   });
 
   app.post("/api/auth/register", (req, res) => {
@@ -176,17 +196,24 @@ export function registerRoutes(app, ctx) {
     };
     users.push(user);
     store.saveUser(user);
-    res.json({ token: signToken(user), user: publicUser(user) });
+    res.json({ token: issueToken(user), user: publicUser(user) });
   });
 
   app.post("/api/auth/login", (req, res) => {
     const username = normalizeUsername(req.body?.username);
     const password = String(req.body?.password || "");
+    try {
+      loginLimiter.assertAllowed(req, username);
+    } catch (err) {
+      return res.status(err.status || 429).json({ error: err.message || "登录尝试过于频繁，请稍后再试。" });
+    }
     const user = users.find((item) => item.username === username && item.provider === "password");
     if (!user || !verifyPassword(password, user.passwordHash)) {
+      loginLimiter.recordFailure(req, username);
       return res.status(401).json({ error: "账号或密码不正确。" });
     }
-    res.json({ token: signToken(user), user: publicUser(user) });
+    loginLimiter.recordSuccess(req, username);
+    res.json({ token: issueToken(user), user: publicUser(user) });
   });
 
   app.get("/api/auth/me", requireAuth, (req, res) => {
@@ -218,16 +245,102 @@ export function registerRoutes(app, ctx) {
   });
 
   app.get("/api/config", requireAuth, (req, res) => {
-    res.json({ config: store.getUserSettings(req.user.id) });
+    res.json({ config: publicUserSettings(store.getUserSettings(req.user.id)) });
   });
 
   app.put("/api/config", requireAuth, (req, res) => {
     const existing = normalizeUserSettings(store.getUserSettings(req.user.id) || {});
     const config = normalizeUserSettings(req.body?.config || req.body || {});
+    for (const providerId of Object.keys(config.provider.cfg || {})) {
+      const incomingKey = config.provider.cfg[providerId]?.apiKey;
+      if (incomingKey === "configured" || incomingKey === "••••••••••••") {
+        config.provider.cfg[providerId].apiKey = existing.provider.cfg?.[providerId]?.apiKey || "";
+      }
+    }
+    if (config.oss?.accessKeySecret === "configured" || config.oss?.accessKeySecret === "••••••••••••") {
+      config.oss.accessKeySecret = existing.oss?.accessKeySecret || "";
+    }
     config.reviewEnabled = existing.reviewEnabled;
     config.updatedAt = new Date().toISOString();
     store.saveUserSettings(req.user.id, config);
-    res.json({ ok: true, config });
+    res.json({ ok: true, config: publicUserSettings(config) });
+  });
+
+  function normalizeDeliveryTargetForRequest(req, existing = {}) {
+    const incoming = req.body?.target || req.body || {};
+    const incomingHeaders = incoming.headers && typeof incoming.headers === "object" && !Array.isArray(incoming.headers)
+      ? Object.fromEntries(Object.entries(incoming.headers).map(([key, value]) => [
+        key,
+        value === "configured" || value === "••••••••••••" ? existing.headers?.[key] || "" : value
+      ]))
+      : incoming.headers;
+    const authSecret = incoming.authSecret === "configured" || incoming.authSecret === "••••••••••••"
+      ? existing.authSecret
+      : incoming.authSecret;
+    return normalizeDeliveryTarget({
+      ...incoming,
+      headers: incomingHeaders,
+      id: incoming.id || existing.id || nanoid(16),
+      userId: req.user.id,
+      authSecret
+    }, existing);
+  }
+
+  app.get("/api/delivery/targets", requireAuth, (req, res) => {
+    res.json({ targets: store.listDeliveryTargets(req.user.id).map(publicDeliveryTarget) });
+  });
+
+  app.post("/api/delivery/targets", requireAuth, (req, res) => {
+    const incoming = req.body?.target || req.body || {};
+    const existing = incoming.id ? store.getDeliveryTarget(req.user.id, incoming.id) : null;
+    if (incoming.id && !existing) return res.status(404).json({ error: "自定义接口不存在。" });
+    const target = normalizeDeliveryTargetForRequest(req, existing || {});
+    if (!target.url || !/^https?:\/\//i.test(target.url)) {
+      return res.status(400).json({ error: "请填写 HTTP/HTTPS 接口地址。" });
+    }
+    if (target.payloadPreset === "custom" && !target.payloadTemplate) {
+      return res.status(400).json({ error: "自定义 JSON 输出需要填写模板。" });
+    }
+    const saved = store.saveDeliveryTarget(target);
+    res.json({ ok: true, target: publicDeliveryTarget(saved) });
+  });
+
+  app.delete("/api/delivery/targets/:id", requireAuth, (req, res) => {
+    const existing = store.getDeliveryTarget(req.user.id, req.params.id);
+    if (!existing) return res.status(404).json({ error: "自定义接口不存在。" });
+    store.deleteDeliveryTarget(req.user.id, req.params.id);
+    res.json({ ok: true });
+  });
+
+  app.post("/api/delivery/targets/:id/test", requireAuth, async (req, res) => {
+    const existing = store.getDeliveryTarget(req.user.id, req.params.id);
+    if (!existing) return res.status(404).json({ error: "自定义接口不存在。" });
+    const target = normalizeDeliveryTargetForRequest(req, existing);
+    try {
+      const context = buildDeliveryContext({
+        job: {
+          id: "delivery-test",
+          userId: req.user.id,
+          title: "接口测试",
+          link: "https://example.com/video.mp4",
+          rawText: "这是一段接口输出测试文本。",
+          outputFiles: [{ label: "原文", url: "/outputs/test.docx", reviewOutputId: "raw" }],
+          settings: { publicBaseUrl: req.protocol && req.get("host") ? `${req.protocol}://${req.get("host")}` : "" },
+          usageSummary: { asrSeconds: 60, llmTokens: 1000 }
+        },
+        reviewOutputs: [{ id: "raw", label: "原文", text: "这是一段接口输出测试文本。", url: "/outputs/test.docx", orderIndex: 0 }],
+        publicBaseUrl: req.protocol && req.get("host") ? `${req.protocol}://${req.get("host")}` : ""
+      });
+      const result = await deliverToTarget({ target, context });
+      res.json({ ok: true, httpStatus: result.httpStatus, responseExcerpt: result.responseExcerpt });
+    } catch (err) {
+      res.status(400).json({
+        ok: false,
+        error: err.message || "接口测试失败。",
+        httpStatus: err.httpStatus || null,
+        responseExcerpt: err.responseExcerpt || ""
+      });
+    }
   });
 
   app.get("/api/usage/summary", requireAuth, (req, res) => {
@@ -380,8 +493,28 @@ export function registerRoutes(app, ctx) {
     const user = users.find((item) => item.id === req.params.id);
     if (!user || user.provider !== "password") return res.status(404).json({ error: "账号不存在或不支持重置密码。" });
     user.passwordHash = hashPassword(password);
+    user.sessionVersion = store.bumpUserSessionVersion(user.id);
     store.saveUser(user);
     res.json({ ok: true, user: publicUser(user) });
+  });
+
+  app.get("/api/admin/job-events", requireAdmin, (req, res) => {
+    const jobId = String(req.query.jobId || "").trim();
+    if (!jobId) return res.status(400).json({ error: "缺少 jobId。" });
+    const job = jobs.get(jobId);
+    if (!job) return res.status(404).json({ error: "任务不存在。" });
+    res.json({ job: publicJob(job), events: store.listJobEvents(jobId) });
+  });
+
+  app.get("/api/admin/diagnostics/summary", requireAdmin, (req, res) => {
+    const range = String(req.query.range || "today");
+    const dateRange = usageDateRange(range === "month" ? "month" : "today");
+    res.json({
+      range: dateRange.range,
+      start: dateRange.start,
+      end: dateRange.end,
+      diagnostics: store.adminDiagnosticsSummary(dateRange)
+    });
   });
 
   app.get("/api/admin/usage/summary", requireAdmin, (req, res) => {
@@ -503,8 +636,16 @@ export function registerRoutes(app, ctx) {
     const formatRequirement = String(req.body?.formatRequirement || "").trim().slice(0, 12000);
     const okfEnabled = Boolean(req.body?.okfEnabled);
     const okfOptions = normalizeOkfOptions(req.body?.okfOptions || {});
+    const deliveryEnabled = Boolean(req.body?.deliveryEnabled);
+    const deliveryTargetId = String(req.body?.deliveryTargetId || "").trim();
     const savedConfig = store.getUserSettings(req.user.id);
     if (!savedConfig) return res.status(400).json({ error: "请先到“模型配置”保存当前账号的模型配置。" });
+    if (deliveryEnabled) {
+      const deliveryTarget = deliveryTargetId ? store.getDeliveryTarget(req.user.id, deliveryTargetId) : null;
+      if (!deliveryTarget || !deliveryTarget.enabled) {
+        return res.status(400).json({ error: "请选择已启用的自定义接口输出目标。" });
+      }
+    }
     const effectiveSettings = savedConfig
       ? settingsFromUserConfig(savedConfig, settings, req)
       : settings;
@@ -535,6 +676,8 @@ export function registerRoutes(app, ctx) {
         formatRequirement,
         okfEnabled,
         okfOptions,
+        deliveryEnabled,
+        deliveryTargetId: deliveryEnabled ? deliveryTargetId : "",
         settings: effectiveSettings,
         userId: req.user.id,
         status: "queued",
@@ -545,6 +688,13 @@ export function registerRoutes(app, ctx) {
       };
       jobs.set(job.id, job);
       store.saveJob(job);
+      store.saveJobEvent?.({
+        jobId: job.id,
+        userId: job.userId,
+        stage: "queued",
+        status: "success",
+        message: "任务已提交"
+      });
       queue.push(job);
       return job;
     });
@@ -697,6 +847,28 @@ export function registerRoutes(app, ctx) {
     }
   });
 
+  app.get("/api/jobs/:id/delivery", requireAuth, (req, res) => {
+    const job = jobs.get(req.params.id);
+    if (!job || job.userId !== req.user.id) return res.status(404).json({ error: "not found" });
+    if (!job.deliveryEnabled) return res.status(404).json({ error: "该任务未启用自定义接口输出。" });
+    res.json({ delivery: publicDeliveryRun(store.getLatestDeliveryRunForJob(job.id)) });
+  });
+
+  app.post("/api/jobs/:id/delivery/retry", requireAuth, async (req, res) => {
+    const job = jobs.get(req.params.id);
+    if (!job || job.userId !== req.user.id) return res.status(404).json({ error: "not found" });
+    if (!job.deliveryEnabled) return res.status(400).json({ error: "该任务未启用自定义接口输出。" });
+    if (job.status === "running" || job.status === "queued") return res.status(409).json({ error: "任务正在处理，暂不能重试接口输出。" });
+    if (isReviewLocked(job)) return res.status(423).json({ error: "高风险审查未放行，暂不能推送自定义接口。" });
+    try {
+      const run = await retryJobDelivery(job);
+      res.json({ ok: true, delivery: publicDeliveryRun(run), job: publicJob(job) });
+    } catch (err) {
+      const run = store.getLatestDeliveryRunForJob(job.id);
+      res.status(500).json({ error: err.message || "接口输出失败。", delivery: publicDeliveryRun(run), job: publicJob(job) });
+    }
+  });
+
   app.get("/api/jobs/:id/download/:index", requireAuth, (req, res) => {
     const job = jobs.get(req.params.id);
     if (!job || job.userId !== req.user.id) return res.status(404).json({ error: "not found" });
@@ -738,8 +910,22 @@ export function registerRoutes(app, ctx) {
         directUrlMode: job.settings?.directUrlMode
       }, req);
       if (job.retryableExtraFailure && job.rawText && Array.isArray(job.failedExtraIndexes) && job.failedExtraIndexes.length) {
+        store.saveJobEvent?.({
+          jobId: job.id,
+          userId: job.userId,
+          stage: "ai_output",
+          status: "running",
+          message: "重试失败额外文件"
+        });
         retryJobExtras(job, effectiveSettings);
       } else {
+        store.saveJobEvent?.({
+          jobId: job.id,
+          userId: job.userId,
+          stage: "queued",
+          status: "success",
+          message: "任务重试入队"
+        });
         retryJob(job, effectiveSettings);
       }
       res.json({ ok: true, job: publicJob(job) });
@@ -756,6 +942,13 @@ export function registerRoutes(app, ctx) {
     const queuedIndex = queue.findIndex((item) => item.id === job.id);
     if (queuedIndex >= 0) queue.splice(queuedIndex, 1);
     removeJobFiles(job);
+    store.saveJobEvent?.({
+      jobId: job.id,
+      userId: job.userId,
+      stage: "cleanup",
+      status: "success",
+      message: "用户删除任务"
+    });
     jobs.delete(job.id);
     store.deleteJob(job.id);
     res.json({ ok: true });

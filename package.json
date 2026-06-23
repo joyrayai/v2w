@@ -1,7 +1,7 @@
 {
   "name": "baidu-video-to-word",
-  "version": "0.3.0",
-  "description": "Batch transcribe direct, page and cloud-drive media into Word documents and OKF knowledge bundles.",
+  "version": "0.4.0",
+  "description": "Batch transcribe direct, page and cloud-drive media into Word documents, OKF bundles and optional custom HTTP outputs.",
   "private": false,
   "type": "module",
   "license": "GPL-3.0-only",
@@ -21,9 +21,12 @@
     "dev:web": "vite --host 0.0.0.0",
     "build": "vite build",
     "start": "node server/src/index.js",
+    "test": "node --test \"server/test/*.test.js\"",
     "setup:netdisk": "bash scripts/setup-netdisk-env.sh"
   },
   "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@ffprobe-installer/ffprobe": "^2.1.2",
     "ali-oss": "^6.23.0",
     "archiver": "^8.0.0",
     "better-sqlite3": "^11.10.0",

@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { nanoid } from "nanoid";
 import { hashPassword, normalizeUsername, signToken, validateUsername, verifyPassword, verifyToken } from "../auth.js";
 import { APP_CONFIG, GIB, SHELL, USAGE_PRICING, defaultPrompt } from "../config.js";
@@ -7,8 +8,10 @@ import { publicUserSettings, normalizeUserSettings, settingsFromUserConfig } fro
 import { publicUsageRecord, usageDateRange } from "../services/usage.js";
 import { DEFAULT_EXTRA_DOC_TEMPLATES } from "../defaults/templates.js";
 
+const require = createRequire(import.meta.url);
+const { version: PACKAGE_VERSION } = require("../../../package.json");
 const MCP_PROTOCOL_VERSION = "2024-11-05";
-const SERVICE_VERSION = "0.2.0";
+const SERVICE_VERSION = process.env.npm_package_version || PACKAGE_VERSION;
 
 function jsonRpcResult(id, result) {
   return { jsonrpc: "2.0", id, result };
@@ -29,6 +32,10 @@ function toolResult(value, isError = false) {
 
 function schema(properties = {}, required = []) {
   return { type: "object", properties, required, additionalProperties: false };
+}
+
+function envFlag(name) {
+  return /^(1|true|yes|on)$/i.test(String(process.env[name] || ""));
 }
 
 function publicUser(user) {
@@ -263,6 +270,16 @@ export function registerMcpRoutes(app, ctx) {
     users
   } = ctx;
 
+  function issueToken(user) {
+    const token = signToken(user);
+    store.saveAuthSession?.({
+      userId: user.id,
+      sessionVersion: Number(user.sessionVersion || 0),
+      expiresAt: new Date(Date.now() + APP_CONFIG.sessionTtlMs).toISOString()
+    });
+    return token;
+  }
+
   async function commandExists(command) {
     if (!runCommand) return false;
     return runCommand(SHELL, ["-lc", `command -v ${command}`]).then(() => true).catch(() => false);
@@ -289,7 +306,7 @@ export function registerMcpRoutes(app, ctx) {
     };
   }
 
-  const tools = [
+  const legacyTools = [
     {
       name: "v2w.setup.status",
       description: "Check whether the service is initialized and whether local runtime tools are available.",
@@ -593,7 +610,108 @@ export function registerMcpRoutes(app, ctx) {
     }
   ];
 
-  async function callTool(req, name, args = {}) {
+  const compactTools = [
+    {
+      name: "v2w.auth",
+      description: "Account setup, registration and login. Use action: login, register, setup_status, or create_admin.",
+      inputSchema: schema({
+        action: { type: "string", enum: ["login", "register", "setup_status", "create_admin"] },
+        username: { type: "string" },
+        password: { type: "string" }
+      }, ["action"])
+    },
+    {
+      name: "v2w.status",
+      description: "Read service status and, when authenticated, account configuration and job state.",
+      inputSchema: schema({
+        authToken: { type: "string" },
+        token: { type: "string" }
+      })
+    },
+    {
+      name: "v2w.config",
+      description: "Read, save or test model configuration. Use action: get, save, or test.",
+      inputSchema: schema({
+        authToken: { type: "string" },
+        action: { type: "string", enum: ["get", "save", "test"] },
+        config: { type: "object" }
+      }, ["action"])
+    },
+    {
+      name: "v2w.netdisk",
+      description: "Manage Baidu or Quark netdisk authorization. Use action: status, login, qr_start, qr_status, or qr_cancel.",
+      inputSchema: schema({
+        authToken: { type: "string" },
+        action: { type: "string", enum: ["status", "login", "qr_start", "qr_status", "qr_cancel"] },
+        provider: { type: "string", enum: ["baidu", "quark"] },
+        mode: { type: "string", enum: ["cookies", "bduss"] },
+        cookies: { type: "string" },
+        bduss: { type: "string" },
+        stoken: { type: "string" },
+        ptoken: { type: "string" },
+        sessionId: { type: "string" }
+      }, ["action"])
+    },
+    {
+      name: "v2w.templates",
+      description: "Manage reusable extra-document templates. Use action: list, get, create, update, or delete.",
+      inputSchema: schema({
+        authToken: { type: "string" },
+        action: { type: "string", enum: ["list", "get", "create", "update", "delete"] },
+        templateId: { type: "string" },
+        title: { type: "string" },
+        prompt: { type: "string" }
+      }, ["action"])
+    },
+    {
+      name: "v2w.jobs",
+      description: "Submit, inspect, retry, delete and collect downloads for transcription jobs.",
+      inputSchema: schema({
+        authToken: { type: "string" },
+        action: { type: "string", enum: ["submit", "list", "get", "retry", "retry_extra", "delete", "downloads"] },
+        links: { type: "array" },
+        prompt: { type: "string" },
+        extraPrompts: { type: "array" },
+        concurrency: { type: "number" },
+        directUrlMode: { type: "boolean" },
+        publicBaseUrl: { type: "string" },
+        okfEnabled: { type: "boolean" },
+        okfOptions: { type: "object" },
+        status: { type: "string", enum: ["all", "queued", "running", "done", "error"] },
+        limit: { type: "number" },
+        jobId: { type: "string" },
+        jobIds: { type: "array", items: { type: "string" } }
+      }, ["action"])
+    },
+    {
+      name: "v2w.usage",
+      description: "Read pricing, usage summary or itemized usage records. Use action: pricing, summary, or records.",
+      inputSchema: schema({
+        authToken: { type: "string" },
+        action: { type: "string", enum: ["pricing", "summary", "records"] },
+        range: { type: "string", enum: ["today", "month"] },
+        page: { type: "number" },
+        pageSize: { type: "number" }
+      }, ["action"])
+    },
+    {
+      name: "v2w.admin",
+      description: "Admin-only user and usage reporting. Use action: users, usage_summary, or usage_records.",
+      inputSchema: schema({
+        authToken: { type: "string" },
+        action: { type: "string", enum: ["users", "usage_summary", "usage_records"] },
+        range: { type: "string", enum: ["today", "month"] },
+        page: { type: "number" },
+        pageSize: { type: "number" }
+      }, ["action"])
+    }
+  ];
+
+  function visibleTools() {
+    return envFlag("MCP_LEGACY_TOOLS") ? [...compactTools, ...legacyTools] : compactTools;
+  }
+
+  async function callLegacyTool(req, name, args = {}) {
     if (name === "v2w.setup.status") {
       return setupStatus();
     }
@@ -603,35 +721,37 @@ export function registerMcpRoutes(app, ctx) {
       const user = userFromCredentials({ ...args, username: args.username || "admin" }, users);
       users.push(user);
       store.saveUser(user);
-      return { authToken: signToken(user), user: publicUser(user), setup: await setupStatus() };
+      return { authToken: issueToken(user), user: publicUser(user), setup: await setupStatus() };
     }
 
     if (name === "v2w.account.register") {
       const user = userFromCredentials(args, users);
       users.push(user);
       store.saveUser(user);
-      return { authToken: signToken(user), user: publicUser(user) };
+      return { authToken: issueToken(user), user: publicUser(user) };
     }
 
     if (name === "v2w.mcp.capabilities") {
       return {
-        version: process.env.npm_package_version || SERVICE_VERSION,
+        version: SERVICE_VERSION,
         protocolVersion: MCP_PROTOCOL_VERSION,
         endpoint: `${reqBaseUrl(req)}/mcp`,
         methods: ["initialize", "tools/list", "tools/call"],
         toolGroups: {
-          setup: toolNamesByPrefix(tools, "v2w.setup."),
+          compact: compactTools.map((tool) => tool.name),
+          setup: toolNamesByPrefix(legacyTools, "v2w.setup."),
           account: ["v2w.account.register", "v2w.login"],
-          config: toolNamesByPrefix(tools, "v2w.config."),
+          config: toolNamesByPrefix(legacyTools, "v2w.config."),
           netdisk: [
-            ...toolNamesByPrefix(tools, "v2w.netdisk."),
-            ...toolNamesByPrefix(tools, "v2w.baidu_qr.")
+            ...toolNamesByPrefix(legacyTools, "v2w.netdisk."),
+            ...toolNamesByPrefix(legacyTools, "v2w.baidu_qr.")
           ],
-          templates: toolNamesByPrefix(tools, "v2w.templates."),
-          jobs: toolNamesByPrefix(tools, "v2w.jobs."),
-          usage: toolNamesByPrefix(tools, "v2w.usage."),
-          admin: toolNamesByPrefix(tools, "v2w.admin.")
+          templates: toolNamesByPrefix(legacyTools, "v2w.templates."),
+          jobs: toolNamesByPrefix(legacyTools, "v2w.jobs."),
+          usage: toolNamesByPrefix(legacyTools, "v2w.usage."),
+          admin: toolNamesByPrefix(legacyTools, "v2w.admin.")
         },
+        legacyToolsExposed: envFlag("MCP_LEGACY_TOOLS"),
         supportedNetdisks: ["baidu", "quark"],
         supportedJobInputs: ["direct_media_url", "bilibili_page", "baidu_netdisk_share", "quark_netdisk_share"],
         supportedOutputs: ["docx", "okf_markdown_bundle"]
@@ -641,7 +761,7 @@ export function registerMcpRoutes(app, ctx) {
     if (name === "v2w.service_info") {
       return {
         name: "V2W",
-        version: process.env.npm_package_version || SERVICE_VERSION,
+        version: SERVICE_VERSION,
         endpoints: {
           baseUrl: reqBaseUrl(req),
           rest: `${reqBaseUrl(req)}/api`,
@@ -655,7 +775,7 @@ export function registerMcpRoutes(app, ctx) {
           selfCheckTool: "v2w.mcp.self_check",
           auth: "Call v2w.login first, then pass authToken in tool arguments or Authorization Bearer."
         },
-        toolCount: tools.length,
+        toolCount: visibleTools().length,
         runtime: runtimeStats()
       };
     }
@@ -665,7 +785,7 @@ export function registerMcpRoutes(app, ctx) {
       const password = String(args.password || "");
       const user = users.find((item) => item.username === username && item.provider === "password");
       if (!user || !verifyPassword(password, user.passwordHash)) throw new Error("账号或密码不正确。");
-      return { authToken: signToken(user), user: publicUser(user) };
+      return { authToken: issueToken(user), user: publicUser(user) };
     }
 
     const { user } = authFromArgs(req, args, users);
@@ -1067,6 +1187,135 @@ export function registerMcpRoutes(app, ctx) {
     throw new Error(`Unknown tool: ${name}`);
   }
 
+  function compactAction(toolName, args, allowed) {
+    const action = String(args.action || "").trim();
+    if (!allowed.includes(action)) {
+      throw new Error(`Unknown action for ${toolName}: ${action || "(missing)"}`);
+    }
+    return action;
+  }
+
+  function statusToken(req, args = {}) {
+    return String(args.authToken || args.token || readBearer(req) || "").trim();
+  }
+
+  async function compactStatus(req, args = {}) {
+    const setup = await setupStatus();
+    const base = {
+      name: "V2W",
+      version: SERVICE_VERSION,
+      protocolVersion: MCP_PROTOCOL_VERSION,
+      endpoints: {
+        baseUrl: reqBaseUrl(req),
+        rest: `${reqBaseUrl(req)}/api`,
+        mcp: `${reqBaseUrl(req)}/mcp`
+      },
+      mcp: {
+        endpoint: "/mcp",
+        publicTools: compactTools.map((tool) => tool.name),
+        publicToolCount: compactTools.length,
+        legacyToolCount: legacyTools.length,
+        legacyToolsExposed: envFlag("MCP_LEGACY_TOOLS")
+      },
+      needsAdmin: setup.needsAdmin,
+      adminReady: setup.adminReady,
+      setup,
+      runtime: runtimeStats(),
+      authenticated: false
+    };
+
+    const token = statusToken(req, args);
+    if (!token) return base;
+
+    const user = verifyToken(token, users);
+    if (!user) {
+      throw new Error("请先调用 v2w.auth 的 login action 获取 authToken，或在 Authorization Bearer 中传入 token。");
+    }
+
+    const config = store.getUserSettings(user.id);
+    const [baidu, quark] = await Promise.all([
+      getNetdiskAccount(user.id, "baidu").catch(() => null),
+      getNetdiskAccount(user.id, "quark").catch(() => null)
+    ]);
+    return {
+      ...base,
+      authenticated: true,
+      user: publicUser(user),
+      account: {
+        hasModelConfig: Boolean(config),
+        baiduNetdiskLoggedIn: Boolean(baidu?.loggedIn),
+        quarkNetdiskLoggedIn: Boolean(quark?.loggedIn)
+      },
+      jobs: jobCountsForUser(jobs, user.id),
+      nextRecommendedActions: [
+        !config ? "Call v2w.config with action=get/save before submitting jobs." : "",
+        !baidu?.loggedIn ? "For Baidu Netdisk links, call v2w.netdisk with action=qr_start or action=login." : "",
+        !quark?.loggedIn ? "For Quark Netdisk links, call v2w.netdisk with action=login." : ""
+      ].filter(Boolean)
+    };
+  }
+
+  async function callTool(req, name, args = {}) {
+    if (name === "v2w.auth") {
+      const action = compactAction(name, args, ["login", "register", "setup_status", "create_admin"]);
+      const legacyName = {
+        login: "v2w.login",
+        register: "v2w.account.register",
+        setup_status: "v2w.setup.status",
+        create_admin: "v2w.setup.create_admin"
+      }[action];
+      return callLegacyTool(req, legacyName, args);
+    }
+
+    if (name === "v2w.status") {
+      return compactStatus(req, args);
+    }
+
+    if (name === "v2w.config") {
+      const action = compactAction(name, args, ["get", "save", "test"]);
+      return callLegacyTool(req, `v2w.config.${action}`, args);
+    }
+
+    if (name === "v2w.netdisk") {
+      const action = compactAction(name, args, ["status", "login", "qr_start", "qr_status", "qr_cancel"]);
+      const legacyName = {
+        status: "v2w.netdisk.status",
+        login: "v2w.netdisk.login",
+        qr_start: "v2w.baidu_qr.start",
+        qr_status: "v2w.baidu_qr.status",
+        qr_cancel: "v2w.baidu_qr.cancel"
+      }[action];
+      return callLegacyTool(req, legacyName, args);
+    }
+
+    if (name === "v2w.templates") {
+      const action = compactAction(name, args, ["list", "get", "create", "update", "delete"]);
+      return callLegacyTool(req, `v2w.templates.${action}`, args);
+    }
+
+    if (name === "v2w.jobs") {
+      const action = compactAction(name, args, ["submit", "list", "get", "retry", "retry_extra", "delete", "downloads"]);
+      return callLegacyTool(req, `v2w.jobs.${action}`, args);
+    }
+
+    if (name === "v2w.usage") {
+      const action = compactAction(name, args, ["pricing", "summary", "records"]);
+      return callLegacyTool(req, `v2w.usage.${action}`, args);
+    }
+
+    if (name === "v2w.admin") {
+      const action = compactAction(name, args, ["users", "usage_summary", "usage_records"]);
+      const legacyName = {
+        users: "v2w.admin.users",
+        usage_summary: "v2w.admin.usage.summary",
+        usage_records: "v2w.admin.usage.records"
+      }[action];
+      return callLegacyTool(req, legacyName, args);
+    }
+
+    return callLegacyTool(req, name, args);
+  }
+
   app.get("/mcp", (_req, res) => {
     res.json({
       name: "V2W MCP",
@@ -1084,7 +1333,7 @@ export function registerMcpRoutes(app, ctx) {
         return res.json(jsonRpcResult(id, {
           protocolVersion: MCP_PROTOCOL_VERSION,
           capabilities: { tools: {} },
-          serverInfo: { name: "v2w", version: process.env.npm_package_version || SERVICE_VERSION }
+          serverInfo: { name: "v2w", version: SERVICE_VERSION }
         }));
       }
 
@@ -1093,7 +1342,7 @@ export function registerMcpRoutes(app, ctx) {
       }
 
       if (body.method === "tools/list") {
-        return res.json(jsonRpcResult(id, { tools }));
+        return res.json(jsonRpcResult(id, { tools: visibleTools() }));
       }
 
       if (body.method === "tools/call") {

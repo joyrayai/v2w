@@ -21,13 +21,13 @@ Do not include real API keys, cookies, BDUSS/STOKEN values, database files, gene
 
 ## Secret Handling
 
-V2W is self-hosted and stores runtime state locally under `data/`. Operators are responsible for protecting:
+V2W is self-hosted and stores runtime state locally. Operators are responsible for protecting:
 
 - `.env`
 - `data/app.sqlite`
 - `data/netdisk-users/`
-- generated files under `data/outputs/`
-- uploaded or downloaded media under `data/downloads/` and `data/audio/`
+- generated files under `outputs/`
+- uploaded or downloaded media under `cache/downloads/` and `cache/audio/`
 
 The repository `.gitignore` excludes these paths. Verify backups, logs, and deployment artifacts separately.
 

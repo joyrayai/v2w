@@ -342,70 +342,6 @@ h1, h2, h3, p { margin: 0; }
 }
 .pageHeader .primary { position: relative; }
 
-.roadmapNotice {
-  margin: 0 0 18px;
-  padding: 0;
-  border: 1px solid rgba(140,162,205,.18);
-  border-radius: var(--radius-md);
-  background: rgba(255,255,255,.74);
-  box-shadow: 0 6px 18px -16px rgba(42,83,170,.35);
-}
-.roadmapNoticeHead {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 4px 12px;
-  align-items: center;
-  padding: 13px 16px;
-  cursor: pointer;
-  list-style: none;
-}
-.roadmapNoticeHead::-webkit-details-marker {
-  display: none;
-}
-.roadmapNoticeHead span {
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 720;
-  letter-spacing: .08em;
-}
-.roadmapNoticeHead strong {
-  color: var(--ink);
-  font-size: 15px;
-  line-height: 1.3;
-  font-weight: 680;
-}
-.roadmapNoticeHead p {
-  grid-column: 2;
-  max-width: 620px;
-  color: var(--ink-2);
-  font-size: 13px;
-  line-height: 1.45;
-}
-.roadmapNoticeItems {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  padding: 0 16px 16px;
-}
-.roadmapNoticeItems span {
-  min-height: 46px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 11px;
-  border: 1px solid rgba(140,162,205,.2);
-  border-radius: var(--radius-sm);
-  background: rgba(255,255,255,.72);
-  color: var(--ink-2);
-  font-size: 12.5px;
-  line-height: 1.35;
-  font-weight: 600;
-}
-.roadmapNoticeItems svg {
-  flex: 0 0 auto;
-  color: var(--accent);
-}
-
 .panel {
   position: relative;
   background: rgba(255,255,255,.92);
@@ -515,6 +451,15 @@ h1, h2, h3, p { margin: 0; }
   box-shadow: 0 5px 16px rgba(33,78,170,.16), inset 0 1px 0 var(--glass-hi);
 }
 .btn:active { transform: scale(.98); }
+.dangerBtn {
+  color: var(--red);
+  border-color: rgba(226,59,70,.22);
+  background: rgba(226,59,70,.07);
+}
+.dangerBtn:hover {
+  border-color: rgba(226,59,70,.4);
+  box-shadow: 0 5px 16px rgba(226,59,70,.13), inset 0 1px 0 var(--glass-hi);
+}
 .batchDownload:disabled {
   pointer-events: none;
   opacity: .45;
@@ -1130,6 +1075,59 @@ textarea { resize: vertical; min-height: 92px; line-height: 1.5; }
   font-weight: 700;
   cursor: pointer;
 }
+.deliveryOutputBody {
+  margin-top: 12px;
+}
+.deliveryOutputBody .field {
+  margin-bottom: 0;
+}
+.deliveryEmpty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.deliveryConfig {
+  overflow: hidden;
+}
+.deliveryPicker {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 14px;
+}
+.deliveryPicker .field {
+  margin-bottom: 0;
+}
+.deliveryFields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, .35fr);
+  gap: 12px 14px;
+}
+.deliveryFields .field {
+  margin-bottom: 0;
+}
+.deliveryFields .full {
+  grid-column: 1 / -1;
+}
+.deliveryFields textarea {
+  min-height: 84px;
+}
+.deliveryTemplateArea {
+  min-height: 180px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12.5px;
+}
+.deliveryActions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(140,162,205,.16);
+}
 
 .notice, .queuePaused {
   display: flex;
@@ -1222,11 +1220,15 @@ textarea { resize: vertical; min-height: 92px; line-height: 1.5; }
   font-size: 12px;
   line-height: 1.2;
 }
-.downloadStat, .usageStat, .reviewStat { font-size: 12.5px; line-height: 1.45; color: var(--accent); }
+.downloadStat, .usageStat, .reviewStat, .deliveryStat { font-size: 12.5px; line-height: 1.45; color: var(--accent); }
 .usageStat { color: var(--ink-2); margin-top: 1px; }
 .reviewStat { display: inline-flex; align-items: center; gap: 6px; color: var(--green); }
 .reviewStat.medium { color: #b7791f; }
 .reviewStat.high, .reviewStat.locked, .reviewStat.error { color: var(--red); }
+.deliveryStat { display: inline-flex; align-items: center; gap: 6px; color: #355075; }
+.deliveryStat.success { color: var(--green); }
+.deliveryStat.error, .deliveryStat.blocked { color: var(--red); }
+.deliveryStat.running { color: var(--accent); }
 .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--ink-3); }
 .dot.run { background: var(--accent); box-shadow: 0 0 0 3px rgba(47,107,255,.16); animation: pulse 1.4s ease-in-out infinite; }
 .dot.done { background: var(--green); }
@@ -1470,6 +1472,14 @@ textarea { resize: vertical; min-height: 92px; line-height: 1.5; }
 .usageRecords .usageTableHead,
 .usageRecords .usageTableRow {
   grid-template-columns: 160px minmax(0, 1.4fr) 70px minmax(120px, .9fr) 120px;
+}
+.adminDiagnosticsTable .usageTableHead,
+.adminDiagnosticsTable .usageTableRow {
+  grid-template-columns: minmax(110px, 1fr) 90px 90px 120px;
+}
+.adminDiagnosticsFailures .usageTableHead,
+.adminDiagnosticsFailures .usageTableRow {
+  grid-template-columns: 160px minmax(0, 1fr) 100px minmax(0, 1.6fr);
 }
 .usageTableHead {
   background: rgba(47,107,255,.07);
@@ -2027,11 +2037,6 @@ textarea { resize: vertical; min-height: 92px; line-height: 1.5; }
   .outputSetting, .extraDocsEmbedded { padding: 12px; }
   .defaultOutput { align-items: flex-start; }
   .submitBar .primary { width: 100%; }
-  .roadmapNotice { padding: 0; }
-  .roadmapNoticeHead { grid-template-columns: 1fr; gap: 5px; }
-  .roadmapNoticeHead p { grid-column: auto; }
-  .roadmapNoticeItems { grid-template-columns: 1fr; }
-  .roadmapNoticeItems span { min-height: 46px; }
   .okfFields { grid-template-columns: 1fr; }
   .primary { width: 100%; justify-content: center; }
   .tabs { width: 100%; }

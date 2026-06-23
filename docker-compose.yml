@@ -1,0 +1,48 @@
+services:
+  v2w:
+    build:
+      context: .
+      args:
+        APT_DEBIAN_MIRROR: ${APT_DEBIAN_MIRROR:-http://deb.debian.org/debian}
+        APT_SECURITY_MIRROR: ${APT_SECURITY_MIRROR:-http://deb.debian.org/debian-security}
+        BAIDUPCS_GO_VERSION: ${BAIDUPCS_GO_VERSION:-v4.0.1}
+        INSTALL_CHROMIUM: ${INSTALL_CHROMIUM:-false}
+    image: joyrayai/v2w:0.4.0
+    container_name: v2w
+    restart: unless-stopped
+    shm_size: "1gb"
+    ports:
+      - "${HOST_PORT:-5174}:5174"
+    environment:
+      NODE_ENV: production
+      PORT: 5174
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:5174}
+      DATA_DIR: /data
+      OUTPUT_DIR: /outputs
+      CACHE_DIR: /cache
+      SESSION_SECRET: ${SESSION_SECRET:-change-me-to-a-long-random-secret}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-change-me-to-a-long-random-encryption-key}
+      SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-7}
+      LOGIN_RATE_LIMIT_MAX: ${LOGIN_RATE_LIMIT_MAX:-8}
+      LOGIN_RATE_LIMIT_WINDOW_MS: ${LOGIN_RATE_LIMIT_WINDOW_MS:-900000}
+      MAX_CONCURRENCY: ${MAX_CONCURRENCY:-5}
+      MAX_USER_RUNNING: ${MAX_USER_RUNNING:-2}
+      MAX_USER_QUEUED: ${MAX_USER_QUEUED:-50}
+      MIN_FREE_DISK_GB: ${MIN_FREE_DISK_GB:-6}
+      CACHE_MAX_BYTES: ${CACHE_MAX_BYTES:-5368709120}
+      FAILED_CACHE_TTL_HOURS: ${FAILED_CACHE_TTL_HOURS:-24}
+      REVIEW_CONTEXT_LIMIT_TOKENS: ${REVIEW_CONTEXT_LIMIT_TOKENS:-1000000}
+      DELIVERY_TIMEOUT_MS: ${DELIVERY_TIMEOUT_MS:-30000}
+      DELIVERY_ALLOW_PRIVATE_URLS: ${DELIVERY_ALLOW_PRIVATE_URLS:-false}
+      CHROME_PATH: /usr/bin/chromium-headless-shell
+      CHROMIUM_PATH: /usr/bin/chromium-headless-shell
+    volumes:
+      - ./data:/data
+      - ./outputs:/outputs
+      - ./cache:/cache
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5174/api/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3

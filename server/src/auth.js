@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { APP_CONFIG } from "./config.js";
 
 export function normalizeUsername(username) {
   return String(username || "").trim().toLowerCase();
@@ -24,7 +25,13 @@ export function verifyPassword(password, passwordHash) {
 }
 
 function authSecret() {
-  return process.env.SESSION_SECRET || "video-to-word-dev-secret-change-me";
+  const configured = String(process.env.SESSION_SECRET || "").trim();
+  if (process.env.NODE_ENV === "production") {
+    if (!configured || configured === "video-to-word-dev-secret-change-me" || configured.startsWith("change-me")) {
+      throw new Error("生产环境必须设置安全的 SESSION_SECRET。");
+    }
+  }
+  return configured || "video-to-word-dev-secret-change-me";
 }
 
 function base64Url(input) {
@@ -32,11 +39,13 @@ function base64Url(input) {
 }
 
 export function signToken(user) {
+  const now = Date.now();
   const payload = {
     sub: user.id,
     username: user.username,
-    iat: Date.now(),
-    exp: Date.now() + 30 * 24 * 60 * 60 * 1000
+    sv: Number(user.sessionVersion || 0),
+    iat: now,
+    exp: now + APP_CONFIG.sessionTtlMs
   };
   const body = base64Url(payload);
   const sig = crypto.createHmac("sha256", authSecret()).update(body).digest("base64url");
@@ -56,7 +65,52 @@ export function verifyToken(token, users) {
   if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
   const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
   if (!payload.exp || payload.exp < Date.now()) return null;
-  return users.find((item) => item.id === payload.sub) || null;
+  const user = users.find((item) => item.id === payload.sub) || null;
+  if (!user) return null;
+  if (Number(payload.sv || 0) !== Number(user.sessionVersion || 0)) return null;
+  return user;
+}
+
+export function createLoginRateLimiter({
+  maxAttempts = APP_CONFIG.loginRateLimitMax,
+  windowMs = APP_CONFIG.loginRateLimitWindowMs
+} = {}) {
+  const failures = new Map();
+
+  function prune(now = Date.now()) {
+    for (const [key, item] of failures.entries()) {
+      if (now - item.firstAt > windowMs) failures.delete(key);
+    }
+  }
+
+  function keyFor(req, username) {
+    return `${req.ip || req.socket?.remoteAddress || "unknown"}:${normalizeUsername(username) || "unknown"}`;
+  }
+
+  function assertAllowed(req, username) {
+    prune();
+    const item = failures.get(keyFor(req, username));
+    if (item && item.count >= maxAttempts) {
+      const waitMs = Math.max(0, windowMs - (Date.now() - item.firstAt));
+      const error = new Error(`登录尝试过于频繁，请 ${Math.ceil(waitMs / 60000)} 分钟后再试。`);
+      error.status = 429;
+      throw error;
+    }
+  }
+
+  function recordFailure(req, username) {
+    const key = keyFor(req, username);
+    const now = Date.now();
+    const item = failures.get(key);
+    if (!item || now - item.firstAt > windowMs) failures.set(key, { count: 1, firstAt: now });
+    else failures.set(key, { count: item.count + 1, firstAt: item.firstAt });
+  }
+
+  function recordSuccess(req, username) {
+    failures.delete(keyFor(req, username));
+  }
+
+  return { assertAllowed, recordFailure, recordSuccess };
 }
 
 export function createRequireAuth(getUsers) {

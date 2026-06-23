@@ -1,5 +1,13 @@
 import fs from "node:fs";
+import crypto from "node:crypto";
 import Database from "better-sqlite3";
+import {
+  decryptSecret,
+  decryptSensitiveObject,
+  encryptSecret,
+  encryptSensitiveObject,
+  redactSensitiveText
+} from "./services/secrets.js";
 
 export function createStore({ sqliteFile, usersFile }) {
   const db = new Database(sqliteFile);
@@ -11,6 +19,7 @@ export function createStore({ sqliteFile, usersFile }) {
       username TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
       provider TEXT NOT NULL DEFAULT 'password',
+      session_version INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS jobs (
@@ -123,7 +132,75 @@ export function createStore({ sqliteFile, usersFile }) {
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_review_overrides_job ON review_overrides(job_id, created_at);
+    CREATE TABLE IF NOT EXISTS delivery_targets (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      method TEXT NOT NULL DEFAULT 'POST',
+      url TEXT NOT NULL,
+      headers_json TEXT,
+      auth_type TEXT NOT NULL DEFAULT 'none',
+      auth_header_name TEXT,
+      auth_secret TEXT,
+      payload_preset TEXT NOT NULL DEFAULT 'standard',
+      payload_template TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_delivery_targets_user ON delivery_targets(user_id, updated_at);
+    CREATE TABLE IF NOT EXISTS delivery_runs (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      http_status INTEGER,
+      response_excerpt TEXT,
+      error TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_delivery_runs_job ON delivery_runs(job_id, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_delivery_runs_user ON delivery_runs(user_id, updated_at);
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      session_version INTEGER NOT NULL DEFAULT 0,
+      expires_at TEXT NOT NULL,
+      revoked_at TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id, created_at);
+    CREATE TABLE IF NOT EXISTS job_events (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      stage TEXT NOT NULL,
+      status TEXT NOT NULL,
+      message TEXT,
+      error_code TEXT,
+      error TEXT,
+      started_at TEXT,
+      ended_at TEXT,
+      duration_ms INTEGER,
+      meta_json TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_job_events_job ON job_events(job_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_job_events_stage_status ON job_events(stage, status, created_at);
   `);
+
+  function migrateUserSessionVersion() {
+    const columns = db.prepare("PRAGMA table_info(users)").all();
+    const columnNames = new Set(columns.map((column) => column.name));
+    if (!columnNames.has("session_version")) {
+      db.exec("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0;");
+    }
+  }
+
+  migrateUserSessionVersion();
 
   function migrateUsersJson() {
     try {
@@ -152,25 +229,40 @@ export function createStore({ sqliteFile, usersFile }) {
 
   function loadUsers() {
     migrateUsersJson();
-    const rows = db.prepare("SELECT id, username, password_hash, provider, created_at FROM users ORDER BY created_at").all();
+    const rows = db.prepare("SELECT id, username, password_hash, provider, session_version, created_at FROM users ORDER BY created_at").all();
     return rows.map((row) => ({
       id: row.id,
       username: row.username,
       passwordHash: row.password_hash,
       provider: row.provider,
+      sessionVersion: Number(row.session_version || 0),
       createdAt: row.created_at
     }));
   }
 
   function saveUser(user) {
     db.prepare(`
-      INSERT INTO users (id, username, password_hash, provider, created_at)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO users (id, username, password_hash, provider, session_version, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         username = excluded.username,
         password_hash = excluded.password_hash,
-        provider = excluded.provider
-    `).run(user.id, user.username, user.passwordHash, user.provider || "password", user.createdAt);
+        provider = excluded.provider,
+        session_version = excluded.session_version
+    `).run(
+      user.id,
+      user.username,
+      user.passwordHash,
+      user.provider || "password",
+      Number(user.sessionVersion || 0),
+      user.createdAt
+    );
+  }
+
+  function bumpUserSessionVersion(userId) {
+    db.prepare("UPDATE users SET session_version = session_version + 1 WHERE id = ?").run(userId);
+    const row = db.prepare("SELECT session_version FROM users WHERE id = ?").get(userId);
+    return Number(row?.session_version || 0);
   }
 
   function migrateReviewOutputsSchema() {
@@ -279,6 +371,155 @@ export function createStore({ sqliteFile, usersFile }) {
     db.prepare("DELETE FROM review_outputs WHERE job_id = ?").run(jobId);
   }
 
+  function parseJsonSafe(value, fallback) {
+    if (!value) return fallback;
+    try {
+      return JSON.parse(value);
+    } catch {
+      return fallback;
+    }
+  }
+
+  function parseSensitiveJson(value, fallback, options = {}) {
+    return decryptSensitiveObject(parseJsonSafe(value, fallback), options);
+  }
+
+  function stringifySensitiveJson(value, options = {}) {
+    return JSON.stringify(encryptSensitiveObject(value || {}, options));
+  }
+
+  function rowToDeliveryTarget(row) {
+    if (!row) return null;
+    return {
+      id: row.id,
+      userId: row.user_id,
+      name: row.name,
+      enabled: Boolean(row.enabled),
+      method: row.method,
+      url: row.url,
+      headers: parseSensitiveJson(row.headers_json, {}, { decryptAllStringValues: true }),
+      authType: row.auth_type,
+      authHeaderName: row.auth_header_name || "",
+      authSecret: row.auth_secret ? decryptSecret(row.auth_secret) : "",
+      payloadPreset: row.payload_preset,
+      payloadTemplate: row.payload_template || "",
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
+  }
+
+  function rowToDeliveryRun(row) {
+    if (!row) return null;
+    return {
+      id: row.id,
+      jobId: row.job_id,
+      userId: row.user_id,
+      targetId: row.target_id,
+      status: row.status,
+      httpStatus: row.http_status,
+      responseExcerpt: row.response_excerpt || "",
+      error: row.error || "",
+      attempts: row.attempts || 0,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
+  }
+
+  function listDeliveryTargets(userId) {
+    return db.prepare("SELECT * FROM delivery_targets WHERE user_id = ? ORDER BY updated_at DESC").all(userId).map(rowToDeliveryTarget);
+  }
+
+  function getDeliveryTarget(userId, id) {
+    return rowToDeliveryTarget(db.prepare("SELECT * FROM delivery_targets WHERE user_id = ? AND id = ?").get(userId, id));
+  }
+
+  function saveDeliveryTarget(target) {
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO delivery_targets (
+        id, user_id, name, enabled, method, url, headers_json, auth_type, auth_header_name,
+        auth_secret, payload_preset, payload_template, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        user_id = excluded.user_id,
+        name = excluded.name,
+        enabled = excluded.enabled,
+        method = excluded.method,
+        url = excluded.url,
+        headers_json = excluded.headers_json,
+        auth_type = excluded.auth_type,
+        auth_header_name = excluded.auth_header_name,
+        auth_secret = excluded.auth_secret,
+        payload_preset = excluded.payload_preset,
+        payload_template = excluded.payload_template,
+        updated_at = excluded.updated_at
+    `).run(
+      target.id,
+      target.userId,
+      target.name,
+      target.enabled ? 1 : 0,
+      target.method || "POST",
+      target.url || "",
+      stringifySensitiveJson(target.headers || {}, { encryptAllStringValues: true }),
+      target.authType || "none",
+      target.authHeaderName || null,
+      target.authSecret ? encryptSecret(target.authSecret) : null,
+      target.payloadPreset || "standard",
+      target.payloadTemplate || null,
+      target.createdAt || now,
+      target.updatedAt || now
+    );
+    return getDeliveryTarget(target.userId, target.id);
+  }
+
+  function deleteDeliveryTarget(userId, id) {
+    db.prepare("DELETE FROM delivery_targets WHERE user_id = ? AND id = ?").run(userId, id);
+  }
+
+  function saveDeliveryRun(run) {
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO delivery_runs (
+        id, job_id, user_id, target_id, status, http_status, response_excerpt,
+        error, attempts, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        status = excluded.status,
+        http_status = excluded.http_status,
+        response_excerpt = excluded.response_excerpt,
+        error = excluded.error,
+        attempts = excluded.attempts,
+        updated_at = excluded.updated_at
+    `).run(
+      run.id,
+      run.jobId,
+      run.userId,
+      run.targetId,
+      run.status,
+      run.httpStatus || null,
+      run.responseExcerpt || null,
+      run.error || null,
+      Number(run.attempts) || 0,
+      run.createdAt || now,
+      run.updatedAt || now
+    );
+    return getDeliveryRun(run.id);
+  }
+
+  function getDeliveryRun(id) {
+    return rowToDeliveryRun(db.prepare("SELECT * FROM delivery_runs WHERE id = ?").get(id));
+  }
+
+  function listDeliveryRunsForJob(jobId) {
+    return db.prepare("SELECT * FROM delivery_runs WHERE job_id = ? ORDER BY updated_at DESC").all(jobId).map(rowToDeliveryRun);
+  }
+
+  function getLatestDeliveryRunForJob(jobId) {
+    return rowToDeliveryRun(db.prepare("SELECT * FROM delivery_runs WHERE job_id = ? ORDER BY updated_at DESC LIMIT 1").get(jobId));
+  }
+
   function jobPayloadForStorage(job) {
     const { reviewOutputs, ...payload } = job || {};
     return payload;
@@ -307,7 +548,9 @@ export function createStore({ sqliteFile, usersFile }) {
 
   function deleteJob(jobId) {
     const tx = db.transaction(() => {
+      db.prepare("DELETE FROM delivery_runs WHERE job_id = ?").run(jobId);
       db.prepare("DELETE FROM review_outputs WHERE job_id = ?").run(jobId);
+      db.prepare("DELETE FROM job_events WHERE job_id = ?").run(jobId);
       db.prepare("DELETE FROM jobs WHERE id = ?").run(jobId);
     });
     tx();
@@ -360,14 +603,14 @@ export function createStore({ sqliteFile, usersFile }) {
       ON CONFLICT(user_id, provider) DO UPDATE SET
         payload = excluded.payload,
         updated_at = excluded.updated_at
-    `).run(userId, provider, JSON.stringify(payload), new Date().toISOString());
+    `).run(userId, provider, stringifySensitiveJson(payload), new Date().toISOString());
   }
 
   function getNetdiskAccount(userId, provider) {
     const row = db.prepare("SELECT payload FROM netdisk_accounts WHERE user_id = ? AND provider = ?").get(userId, provider);
     if (!row?.payload) return null;
     try {
-      return JSON.parse(row.payload);
+      return parseSensitiveJson(row.payload, null);
     } catch {
       return null;
     }
@@ -380,14 +623,14 @@ export function createStore({ sqliteFile, usersFile }) {
       ON CONFLICT(user_id) DO UPDATE SET
         payload = excluded.payload,
         updated_at = excluded.updated_at
-    `).run(userId, JSON.stringify(payload), new Date().toISOString());
+    `).run(userId, stringifySensitiveJson(payload), new Date().toISOString());
   }
 
   function getUserSettings(userId) {
     const row = db.prepare("SELECT payload, updated_at FROM user_settings WHERE user_id = ?").get(userId);
     if (!row?.payload) return null;
     try {
-      return { ...JSON.parse(row.payload), updatedAt: row.updated_at };
+      return { ...parseSensitiveJson(row.payload, {}), updatedAt: row.updated_at };
     } catch {
       return null;
     }
@@ -400,14 +643,14 @@ export function createStore({ sqliteFile, usersFile }) {
       ON CONFLICT(key) DO UPDATE SET
         payload = excluded.payload,
         updated_at = excluded.updated_at
-    `).run(key, JSON.stringify(payload || {}), new Date().toISOString());
+    `).run(key, stringifySensitiveJson(payload || {}), new Date().toISOString());
   }
 
   function getAppSetting(key) {
     const row = db.prepare("SELECT payload, updated_at FROM app_settings WHERE key = ?").get(key);
     if (!row?.payload) return null;
     try {
-      return { ...JSON.parse(row.payload), updatedAt: row.updated_at };
+      return { ...parseSensitiveJson(row.payload, {}), updatedAt: row.updated_at };
     } catch {
       return null;
     }
@@ -438,6 +681,113 @@ export function createStore({ sqliteFile, usersFile }) {
       record.meta ? JSON.stringify(record.meta) : null,
       record.createdAt || new Date().toISOString()
     );
+  }
+
+  function saveAuthSession(session) {
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO auth_sessions (id, user_id, session_version, expires_at, revoked_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        revoked_at = excluded.revoked_at
+    `).run(
+      session.id || crypto.randomUUID(),
+      session.userId,
+      Number(session.sessionVersion || 0),
+      session.expiresAt,
+      session.revokedAt || null,
+      session.createdAt || now
+    );
+  }
+
+  function saveJobEvent(event) {
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO job_events (
+        id, job_id, user_id, stage, status, message, error_code, error,
+        started_at, ended_at, duration_ms, meta_json, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      event.id || crypto.randomUUID(),
+      event.jobId,
+      event.userId,
+      event.stage,
+      event.status,
+      event.message || null,
+      event.errorCode || null,
+      event.error ? redactSensitiveText(event.error) : null,
+      event.startedAt || null,
+      event.endedAt || null,
+      Number.isFinite(Number(event.durationMs)) ? Number(event.durationMs) : null,
+      event.meta ? JSON.stringify(encryptSensitiveObject(event.meta)) : null,
+      event.createdAt || now
+    );
+  }
+
+  function listJobEvents(jobId) {
+    const rows = db.prepare(`
+      SELECT *
+      FROM job_events
+      WHERE job_id = ?
+      ORDER BY created_at ASC
+    `).all(jobId);
+    return rows.map((row) => ({
+      id: row.id,
+      jobId: row.job_id,
+      userId: row.user_id,
+      stage: row.stage,
+      status: row.status,
+      message: row.message || "",
+      errorCode: row.error_code || "",
+      error: row.error || "",
+      startedAt: row.started_at || "",
+      endedAt: row.ended_at || "",
+      durationMs: row.duration_ms,
+      meta: row.meta_json ? decryptSensitiveObject(JSON.parse(row.meta_json)) : null,
+      createdAt: row.created_at
+    }));
+  }
+
+  function adminDiagnosticsSummary({ start, end } = {}) {
+    const rows = db.prepare(`
+      SELECT stage, status, COUNT(*) AS records, AVG(duration_ms) AS avg_duration_ms
+      FROM job_events
+      WHERE created_at >= ?
+        AND created_at < ?
+      GROUP BY stage, status
+      ORDER BY records DESC
+    `).all(start, end);
+    const recentFailures = db.prepare(`
+      SELECT e.*, j.payload
+      FROM job_events e
+      LEFT JOIN jobs j ON j.id = e.job_id
+      WHERE e.created_at >= ?
+        AND e.created_at < ?
+        AND e.status = 'error'
+      ORDER BY e.created_at DESC
+      LIMIT 30
+    `).all(start, end);
+    return {
+      byStage: rows.map((row) => ({
+        stage: row.stage,
+        status: row.status,
+        records: Number(row.records || 0),
+        avgDurationMs: Number(row.avg_duration_ms || 0)
+      })),
+      recentFailures: recentFailures.map((row) => {
+        const job = parseJsonSafe(row.payload, {});
+        return {
+          jobId: row.job_id,
+          jobTitle: job.title || "",
+          userId: row.user_id,
+          stage: row.stage,
+          message: row.message || "",
+          error: row.error || "",
+          createdAt: row.created_at
+        };
+      })
+    };
   }
 
   function listTemplates(userId) {
@@ -844,16 +1194,24 @@ export function createStore({ sqliteFile, usersFile }) {
   return {
     adminUsageRecords,
     adminUsageSummary,
+    adminDiagnosticsSummary,
     activateReviewRulePack,
+    bumpUserSessionVersion,
     close: () => db.close(),
+    deleteDeliveryTarget,
     deleteJob,
     deleteReviewOutputs,
+    getDeliveryTarget,
+    getLatestDeliveryRunForJob,
     getNetdiskAccount,
     getActiveReviewRulePack,
     getAppSetting,
     getLatestReviewRunForJob,
     getUserSettings,
     deleteTemplate,
+    listJobEvents,
+    listDeliveryRunsForJob,
+    listDeliveryTargets,
     listTemplates,
     listReviewOutputs,
     listReviewRulePacks,
@@ -861,8 +1219,12 @@ export function createStore({ sqliteFile, usersFile }) {
     loadJobs,
     loadUsers,
     saveAppSetting,
+    saveAuthSession,
+    saveDeliveryRun,
+    saveDeliveryTarget,
     saveNetdiskAccount,
     saveJob,
+    saveJobEvent,
     saveReviewOutput,
     saveReviewOverride,
     saveReviewRulePack,

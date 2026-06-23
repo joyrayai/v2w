@@ -4,6 +4,7 @@ import os from "node:os";
 import { createRequire } from "node:module";
 import express from "express";
 import cors from "cors";
+import { nanoid } from "nanoid";
 import {
   APP_CONFIG,
   AUDIO_DIR,
@@ -56,9 +57,18 @@ import {
   publicReviewRun,
   runDocumentReview
 } from "./services/review.js";
+import {
+  buildDeliveryContext,
+  completedDeliveryJobSnapshot,
+  deliverToTarget,
+  publicDeliveryRun,
+  shouldAutoDeliver
+} from "./services/delivery.js";
+import { assertSecurityConfig, redactSensitiveText } from "./services/secrets.js";
 
 const require = createRequire(import.meta.url);
 const archiverModule = require("archiver");
+assertSecurityConfig();
 ensureDataDirs();
 
 const app = express();
@@ -188,6 +198,18 @@ function jobReferenceTime(job) {
   return new Date(job.completedAt || job.updatedAt || job.createdAt || Date.now()).getTime();
 }
 
+function pathSize(targetPath) {
+  if (!targetPath || !fs.existsSync(targetPath)) return 0;
+  const stat = fs.statSync(targetPath);
+  if (stat.isFile()) return stat.size;
+  if (!stat.isDirectory()) return 0;
+  return fs.readdirSync(targetPath).reduce((total, name) => total + pathSize(path.join(targetPath, name)), 0);
+}
+
+function jobRuntimeCacheSize(job) {
+  return pathSize(path.join(DOWNLOAD_DIR, job.id)) + pathSize(job.audioPath || path.join(AUDIO_DIR, `${job.id}.mp3`));
+}
+
 function summarizeError(message) {
   const text = String(message || "");
   if (!text) return "";
@@ -218,6 +240,52 @@ function update(job, patch) {
   if (job.id && job.userId) store.saveJob(job);
 }
 
+function recordJobEvent(job, stage, status, details = {}) {
+  if (!job?.id || !job?.userId || !stage || !status) return;
+  try {
+    store.saveJobEvent({
+      jobId: job.id,
+      userId: job.userId,
+      stage,
+      status,
+      message: details.message || "",
+      errorCode: details.errorCode || "",
+      error: details.error ? redactSensitiveText(details.error) : "",
+      startedAt: details.startedAt || "",
+      endedAt: details.endedAt || "",
+      durationMs: details.durationMs,
+      meta: details.meta || null
+    });
+  } catch {
+    // Diagnostics must never block task execution.
+  }
+}
+
+async function runJobStage(job, stage, message, fn) {
+  const startedAt = new Date().toISOString();
+  const startMs = Date.now();
+  recordJobEvent(job, stage, "running", { message, startedAt });
+  try {
+    const result = await fn();
+    recordJobEvent(job, stage, "success", {
+      message,
+      startedAt,
+      endedAt: new Date().toISOString(),
+      durationMs: Date.now() - startMs
+    });
+    return result;
+  } catch (err) {
+    recordJobEvent(job, stage, "error", {
+      message,
+      error: err.message || String(err),
+      startedAt,
+      endedAt: new Date().toISOString(),
+      durationMs: Date.now() - startMs
+    });
+    throw err;
+  }
+}
+
 function markStarted(job, step, progress) {
   update(job, {
     status: "running",
@@ -230,7 +298,7 @@ function markStarted(job, step, progress) {
 function jobPhaseTotal(job) {
   const extraCount = Array.isArray(job.extraPrompts) ? job.extraPrompts.filter((item) => item.prompt?.trim()).length : 0;
   const hasSmartTitle = Array.isArray(job.extraPrompts) && job.extraPrompts.some((item) => item.prompt?.trim() && item.smartTitle);
-  return 3 + extraCount + (hasSmartTitle ? 1 : 0) + (job.okfEnabled ? 1 : 0);
+  return 3 + extraCount + (hasSmartTitle ? 1 : 0) + (job.okfEnabled ? 1 : 0) + (job.deliveryEnabled ? 1 : 0);
 }
 
 function phaseProgressFromOverall(progress, start, end) {
@@ -252,12 +320,19 @@ function updatePhase(job, phaseIndex, step, progress, stageProgress) {
 function markFinished(job, patch = {}) {
   const completedAt = new Date().toISOString();
   const started = job.startedAt ? new Date(job.startedAt).getTime() : new Date(job.createdAt).getTime();
-  update(job, {
+  const safePatch = {
     ...patch,
+    error: patch.error ? redactSensitiveText(patch.error) : patch.error
+  };
+  update(job, {
+    ...safePatch,
     settings: scrubJobSettings(job.settings),
     completedAt,
     durationMs: Math.max(0, new Date(completedAt).getTime() - started)
   });
+  if (safePatch.status === "error") {
+    recordJobEvent(job, "job", "error", { message: safePatch.step || "失败", error: safePatch.error || "" });
+  }
 }
 
 function scrubJobSettings(settings = {}) {
@@ -410,6 +485,11 @@ function latestPublicReview(job) {
   return publicReviewRun(store.getLatestReviewRunForJob(job.id));
 }
 
+function latestPublicDelivery(job) {
+  if (!job?.id || !job.deliveryEnabled) return null;
+  return publicDeliveryRun(store.getLatestDeliveryRunForJob(job.id));
+}
+
 function publicOutputFiles(job) {
   return (job.outputFiles || []).map((file, index) => ({
     ...file,
@@ -423,6 +503,7 @@ function publicJob(job) {
     ? summarizeJobUsage(job.usageRecords)
     : job.usageSummary;
   const review = latestPublicReview(job);
+  const delivery = latestPublicDelivery(job);
   return {
     ...rest,
     outputFiles: publicOutputFiles(job),
@@ -431,6 +512,7 @@ function publicJob(job) {
     review,
     reviewEnabled: isReviewEnabledForUser(job.userId),
     reviewLocked: Boolean(review?.locked && !review?.overridden),
+    delivery,
     errorSummary: summarizeError(job.error)
   };
 }
@@ -1070,10 +1152,12 @@ function activeReviewConfig() {
 
 async function reviewJobIfEnabled(job) {
   if (!isReviewEnabledForUser(job.userId)) return null;
-  updatePhase(job, jobPhaseTotal(job), "审查生成文档", 100, 40);
-  const rulePack = store.getActiveReviewRulePack();
-  const config = activeReviewConfig();
-  const run = await runDocumentReview({ job, rulePack, config, store });
+  updatePhase(job, jobPhaseTotal(job) - (job.deliveryEnabled ? 1 : 0), "审查生成文档", 100, 40);
+  const run = await runJobStage(job, "review", "审查生成文档", async () => {
+    const rulePack = store.getActiveReviewRulePack();
+    const config = activeReviewConfig();
+    return runDocumentReview({ job, rulePack, config, store });
+  });
   update(job, {
     reviewStatus: run.status,
     reviewRiskLevel: run.riskLevel,
@@ -1081,6 +1165,73 @@ async function reviewJobIfEnabled(job) {
     reviewRunId: run.id
   });
   return run;
+}
+
+async function deliverJobIfEnabled(job, options = {}) {
+  if (!job.deliveryEnabled) return null;
+  const targetId = String(job.deliveryTargetId || "").trim();
+  if (!targetId) throw new Error("未选择自定义接口输出目标。");
+  if (job.reviewLocked && !options.force) throw new Error("高风险审查未放行，暂不推送自定义接口。");
+  const target = store.getDeliveryTarget(job.userId, targetId);
+  if (!target) throw new Error("自定义接口输出目标不存在。");
+  if (!target.enabled) throw new Error("自定义接口输出目标未启用。");
+
+  const previous = store.getLatestDeliveryRunForJob(job.id);
+  const runId = nanoid(16);
+  const baseRun = {
+    id: runId,
+    jobId: job.id,
+    userId: job.userId,
+    targetId: target.id,
+    status: "running",
+    attempts: Number(previous?.attempts || 0) + 1,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  store.saveDeliveryRun(baseRun);
+  update(job, { deliveryStatus: "running", deliveryError: "", deliveryRunId: runId });
+  updatePhase(job, jobPhaseTotal(job), "推送自定义接口", 100, 35);
+
+  try {
+    const result = await runJobStage(job, "delivery", "推送自定义接口", async () => {
+      const deliveryJob = completedDeliveryJobSnapshot(job);
+      const context = buildDeliveryContext({
+        job: deliveryJob,
+        reviewOutputs: store.listReviewOutputs(job.id),
+        publicBaseUrl: deliveryJob.settings?.publicBaseUrl || ""
+      });
+      return deliverToTarget({ target, context });
+    });
+    const completed = store.saveDeliveryRun({
+      ...baseRun,
+      status: "success",
+      httpStatus: result.httpStatus,
+      responseExcerpt: result.responseExcerpt,
+      error: ""
+    });
+    update(job, {
+      deliveryStatus: "success",
+      deliveryError: "",
+      deliveryRunId: runId,
+      phaseProgress: 100
+    });
+    return completed;
+  } catch (err) {
+    const failed = store.saveDeliveryRun({
+      ...baseRun,
+      status: "error",
+      httpStatus: err.httpStatus || null,
+      responseExcerpt: err.responseExcerpt || "",
+      error: err.message || "自定义接口输出失败。"
+    });
+    update(job, {
+      deliveryStatus: "error",
+      deliveryError: failed.error,
+      deliveryRunId: runId,
+      phaseProgress: 100
+    });
+    throw err;
+  }
 }
 
 async function generateExtraFilesForJob(job, rawText, entries, options = {}) {
@@ -1273,7 +1424,7 @@ async function processJob(job) {
   if (settings.directUrlMode !== false && isDirectMediaUrl(mediaUrl)) {
     markStarted(job, "直链提交转写服务", 35);
     updatePhase(job, 1, "直链提交转写服务", 35, 40);
-    audioDurationSec = await probeDurationSec(mediaUrl, settings);
+    audioDurationSec = await runJobStage(job, "download", "读取直链媒体信息", () => probeDurationSec(mediaUrl, settings));
     if (audioDurationSec > 0) {
       update(job, { audioDurationSec });
       asrUsageMeta = { source: "ffprobe_direct_url" };
@@ -1281,24 +1432,24 @@ async function processJob(job) {
   } else {
     markStarted(job, "下载视频", 10);
     update(job, { phaseIndex: 1, phaseTotal: jobPhaseTotal(job), phaseProgress: 0 });
-    const videoPath = await downloadWithTemplate(job, settings);
+    const videoPath = await runJobStage(job, "download", "下载视频", () => downloadWithTemplate(job, settings));
     updatePhase(job, 1, "抽取音频", 25, 80);
     update(job, { downloadSpeed: "" });
-    const audioPath = await extractAudio(videoPath, settings, job, update);
-    audioDurationSec = await probeDurationSec(audioPath, settings);
+    const audioPath = await runJobStage(job, "extract_audio", "抽取音频", () => extractAudio(videoPath, settings, job, update));
+    audioDurationSec = await runJobStage(job, "extract_audio", "读取音频时长", () => probeDurationSec(audioPath, settings));
     if (audioDurationSec > 0) {
       update(job, { audioDurationSec });
       asrUsageMeta = { source: "ffprobe" };
     }
     removeDownloadedSource(job, videoPath);
     updatePhase(job, 1, hasOssConfig(settings) ? "上传 OSS" : "生成临时访问 URL", 40, 90);
-    mediaUrl = await resolveAsrMediaUrl(audioPath, settings, job, update);
+    mediaUrl = await runJobStage(job, "extract_audio", "生成转写访问地址", () => resolveAsrMediaUrl(audioPath, settings, job, update));
     updatePhase(job, 1, "提交转写服务", 50, 100);
   }
-  const taskId = await submitAsr(mediaUrl, settings);
+  const taskId = await runJobStage(job, "asr", "提交转写服务", () => submitAsr(mediaUrl, settings));
   updatePhase(job, 2, "等待转写结果", 65, 35);
   update(job, { asrTaskId: taskId });
-  const transcript = await pollAsr(taskId, settings);
+  const transcript = await runJobStage(job, "asr", "等待转写结果", () => pollAsr(taskId, settings));
   if (audioDurationSec > 0) {
     recordAsrUsage(job, settings, audioDurationSec, asrUsageMeta || {});
   }
@@ -1306,7 +1457,7 @@ async function processJob(job) {
   update(job, { rawText });
   updatePhase(job, 3, "生成转写原文", 78, 70);
   const files = [];
-  const rawOutput = await writeWord(job, rawText, { suffix: "原文", title: `${job.title} - 原文` });
+  const rawOutput = await runJobStage(job, "ai_output", "生成转写原文", () => writeWord(job, rawText, { suffix: "原文", title: `${job.title} - 原文` }));
   files.push({ label: "原文", url: `/outputs/${encodeURIComponent(rawOutput.fileName)}`, reviewOutputId: "raw" });
   setReviewOutput(job, "raw", "原文", files[0].url, rawText, 0);
   update(job, { phaseProgress: 100 });
@@ -1319,11 +1470,11 @@ async function processJob(job) {
   });
 
   const optionalWarnings = [];
-  const extraResult = await generateExtraFilesForJob(job, rawText, extraPrompts);
+  const extraResult = await runJobStage(job, "ai_output", "生成额外文件", () => generateExtraFilesForJob(job, rawText, extraPrompts));
   if (!extraResult.extraErrors.length) {
-    await smartRenameExtraOutputsIfNeeded(job, rawText, extraResult.generatedExtraOutputs, optionalWarnings);
+    await runJobStage(job, "ai_output", "生成统一文件名", () => smartRenameExtraOutputsIfNeeded(job, rawText, extraResult.generatedExtraOutputs, optionalWarnings));
   }
-  await generateOkfFileForJob(job, rawText, optionalWarnings);
+  await runJobStage(job, "ai_output", "生成 OKF 知识格式", () => generateOkfFileForJob(job, rawText, optionalWarnings));
   const finalFiles = job.outputFiles || extraResult.files;
   let reviewRun = null;
   let reviewError = "";
@@ -1333,29 +1484,57 @@ async function processJob(job) {
     reviewError = `审查失败：${err.message}`;
     update(job, { reviewStatus: "error", reviewError });
   }
+  let deliveryRun = null;
+  let deliveryError = "";
+  const deliveryDecision = shouldAutoDeliver({
+    job,
+    extraErrors: extraResult.extraErrors,
+    reviewRun,
+    reviewError
+  });
+  if (deliveryDecision.ok) {
+    try {
+      deliveryRun = await deliverJobIfEnabled(job);
+    } catch (err) {
+      deliveryError = `接口输出失败：${err.message}`;
+    }
+  } else if (job.deliveryEnabled) {
+    deliveryError = deliveryDecision.reason;
+    update(job, { deliveryStatus: "blocked", deliveryError });
+  }
 
   markFinished(job, {
     status: "done",
-    step: extraResult.extraErrors.length ? "完成，部分额外文件失败" : reviewRun?.locked ? "完成，高风险已锁定" : reviewError ? "完成，审查失败" : "完成",
+    step: extraResult.extraErrors.length
+      ? "完成，部分额外文件失败"
+      : reviewRun?.locked ? "完成，高风险已锁定"
+        : reviewError ? "完成，审查失败"
+          : deliveryError ? "完成，接口输出失败"
+            : "完成",
     progress: 100,
     phaseIndex: jobPhaseTotal(job),
     phaseTotal: jobPhaseTotal(job),
     phaseProgress: 100,
     outputFiles: finalFiles,
     outputUrl: finalFiles[0]?.url,
-    error: [...extraResult.extraErrors, ...optionalWarnings, reviewError].filter(Boolean).join("\n") || undefined,
+    error: [...extraResult.extraErrors, ...optionalWarnings, reviewError, deliveryError].filter(Boolean).join("\n") || undefined,
     completedExtraIndexes: extraResult.completedExtraIndexes,
     failedExtraIndexes: extraResult.failedExtraIndexes,
     retryableExtraFailure: extraResult.extraErrors.length > 0,
     reviewStatus: reviewRun?.status || job.reviewStatus,
     reviewRiskLevel: reviewRun?.riskLevel || job.reviewRiskLevel,
     reviewLocked: Boolean(reviewRun?.locked && !reviewRun?.overridden),
-    reviewRunId: reviewRun?.id || job.reviewRunId
+    reviewRunId: reviewRun?.id || job.reviewRunId,
+    deliveryStatus: deliveryRun?.status || job.deliveryStatus,
+    deliveryRunId: deliveryRun?.id || job.deliveryRunId,
+    deliveryError: deliveryError || job.deliveryError || ""
   });
   if (extraResult.extraErrors.length) {
     pauseQueue(summarizeError(extraResult.extraErrors[0]) || "额外文件生成失败，已暂停后续任务。");
   } else {
+    recordJobEvent(job, "cleanup", "running", { message: "清理运行缓存" });
     removeJobRuntimeFiles(job);
+    recordJobEvent(job, "cleanup", "success", { message: "清理运行缓存" });
   }
 }
 
@@ -1391,23 +1570,49 @@ async function retryJobExtraDocs(job, retrySettings = {}) {
     reviewError = `审查失败：${err.message}`;
     update(job, { reviewStatus: "error", reviewError });
   }
+  let deliveryRun = null;
+  let deliveryError = "";
+  const deliveryDecision = shouldAutoDeliver({
+    job,
+    extraErrors: remainingFailed.length ? ["额外文件生成失败"] : [],
+    reviewRun,
+    reviewError
+  });
+  if (deliveryDecision.ok) {
+    try {
+      deliveryRun = await deliverJobIfEnabled(job);
+    } catch (err) {
+      deliveryError = `接口输出失败：${err.message}`;
+    }
+  } else if (job.deliveryEnabled) {
+    deliveryError = deliveryDecision.reason;
+    update(job, { deliveryStatus: "blocked", deliveryError });
+  }
   markFinished(job, {
     status: "done",
-    step: remainingFailed.length ? "完成，部分额外文件失败" : reviewRun?.locked ? "完成，高风险已锁定" : reviewError ? "完成，审查失败" : "完成",
+    step: remainingFailed.length
+      ? "完成，部分额外文件失败"
+      : reviewRun?.locked ? "完成，高风险已锁定"
+        : reviewError ? "完成，审查失败"
+          : deliveryError ? "完成，接口输出失败"
+            : "完成",
     progress: 100,
     phaseIndex: jobPhaseTotal(job),
     phaseTotal: jobPhaseTotal(job),
     phaseProgress: 100,
     outputFiles: job.outputFiles || extraResult.files,
     outputUrl: (job.outputFiles || extraResult.files)[0]?.url,
-    error: [...extraResult.extraErrors, ...optionalWarnings, reviewError].filter(Boolean).join("\n") || undefined,
+    error: [...extraResult.extraErrors, ...optionalWarnings, reviewError, deliveryError].filter(Boolean).join("\n") || undefined,
     completedExtraIndexes: extraResult.completedExtraIndexes,
     failedExtraIndexes: remainingFailed,
     retryableExtraFailure: remainingFailed.length > 0,
     reviewStatus: reviewRun?.status || job.reviewStatus,
     reviewRiskLevel: reviewRun?.riskLevel || job.reviewRiskLevel,
     reviewLocked: Boolean(reviewRun?.locked && !reviewRun?.overridden),
-    reviewRunId: reviewRun?.id || job.reviewRunId
+    reviewRunId: reviewRun?.id || job.reviewRunId,
+    deliveryStatus: deliveryRun?.status || job.deliveryStatus,
+    deliveryRunId: deliveryRun?.id || job.deliveryRunId,
+    deliveryError: deliveryError || job.deliveryError || ""
   });
   if (remainingFailed.length) {
     pauseQueue(summarizeError(extraResult.extraErrors[0]) || "额外文件生成失败，已暂停后续任务。");
@@ -1446,6 +1651,9 @@ function requeueJob(job, settings = {}) {
     reviewLocked: false,
     reviewRunId: "",
     reviewError: "",
+    deliveryStatus: "",
+    deliveryError: "",
+    deliveryRunId: "",
     okfSummary: null,
     okfError: ""
   });
@@ -1475,16 +1683,32 @@ function pumpQueue() {
 
 function clearCompletedCache() {
   const now = Date.now();
+  const failedCacheEntries = [];
   for (const job of [...jobs.values()]) {
     if (isActiveJob(job)) continue;
     if (job.status === "done") {
       removeJobRuntimeFiles(job);
       continue;
     }
-    if (job.status === "error" && now - jobReferenceTime(job) > APP_CONFIG.cleanupIntervalMs) {
+    if (job.status === "error" && now - jobReferenceTime(job) > APP_CONFIG.failedCacheTtlMs) {
       removeJobRuntimeFiles(job);
       update(job, { cacheExpired: true });
+      recordJobEvent(job, "cleanup", "success", { message: "失败缓存超过保留时间，已清理" });
+      continue;
     }
+    if (job.status === "error") {
+      const size = jobRuntimeCacheSize(job);
+      if (size > 0) failedCacheEntries.push({ job, size, time: jobReferenceTime(job) });
+    }
+  }
+
+  let failedCacheBytes = failedCacheEntries.reduce((total, item) => total + item.size, 0);
+  for (const { job, size } of failedCacheEntries.sort((a, b) => a.time - b.time)) {
+    if (failedCacheBytes <= APP_CONFIG.cacheMaxBytes) break;
+    removeJobRuntimeFiles(job);
+    failedCacheBytes -= size;
+    update(job, { cacheExpired: true });
+    recordJobEvent(job, "cleanup", "success", { message: "失败缓存超过空间上限，已清理" });
   }
 
   fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
@@ -1530,6 +1754,18 @@ registerRoutes(app, {
     queuePaused = false;
     queuePauseReason = "";
     pumpQueue();
+  },
+  retryJobDelivery(job) {
+    const deliveryDecision = shouldAutoDeliver({
+      job,
+      extraErrors: job.retryableExtraFailure || (Array.isArray(job.failedExtraIndexes) && job.failedExtraIndexes.length)
+        ? ["额外文件生成失败"]
+        : [],
+      reviewRun: store.getLatestReviewRunForJob(job.id),
+      reviewError: job.reviewStatus === "error" ? job.reviewError || "审查失败" : ""
+    });
+    if (!deliveryDecision.ok) throw new Error(deliveryDecision.reason);
+    return deliverJobIfEnabled(job);
   },
   retryJobExtras(job, retrySettings = {}) {
     if (job.status === "running" || job.status === "queued") throw new Error("任务正在处理，不能重复重试。");

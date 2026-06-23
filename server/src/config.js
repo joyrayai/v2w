@@ -5,10 +5,11 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export const ROOT = path.resolve(__dirname, "../..");
-export const DATA_DIR = path.join(ROOT, "data");
-export const DOWNLOAD_DIR = path.join(DATA_DIR, "downloads");
-export const AUDIO_DIR = path.join(DATA_DIR, "audio");
-export const OUTPUT_DIR = path.join(DATA_DIR, "outputs");
+export const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, "data");
+export const CACHE_DIR = process.env.CACHE_DIR || DATA_DIR;
+export const DOWNLOAD_DIR = path.join(CACHE_DIR, "downloads");
+export const AUDIO_DIR = path.join(CACHE_DIR, "audio");
+export const OUTPUT_DIR = process.env.OUTPUT_DIR || path.join(DATA_DIR, "outputs");
 export const NETDISK_USERS_DIR = path.join(DATA_DIR, "netdisk-users");
 export const USERS_FILE = path.join(DATA_DIR, "users.json");
 export const SQLITE_FILE = path.join(DATA_DIR, "app.sqlite");
@@ -38,7 +39,14 @@ export const APP_CONFIG = {
   maxUserRunning: boundedInt(process.env.MAX_USER_RUNNING, 2, 1, 5),
   maxUserQueued: boundedInt(process.env.MAX_USER_QUEUED, 50, 1, 200),
   minFreeDiskBytes: boundedInt(process.env.MIN_FREE_DISK_GB, 6, 1, 30) * GIB,
+  sessionTtlMs: boundedInt(process.env.SESSION_TTL_DAYS, 7, 1, 90) * 24 * 60 * 60 * 1000,
+  loginRateLimitMax: boundedInt(process.env.LOGIN_RATE_LIMIT_MAX, 8, 3, 100),
+  loginRateLimitWindowMs: boundedInt(process.env.LOGIN_RATE_LIMIT_WINDOW_MS, 900000, 60000, 86400000),
+  failedCacheTtlMs: boundedInt(process.env.FAILED_CACHE_TTL_HOURS, 24, 1, 168) * 60 * 60 * 1000,
+  cacheMaxBytes: boundedInt(process.env.CACHE_MAX_BYTES, 5 * GIB, 100 * 1024 ** 2, 100 * GIB),
   reviewContextLimitTokens: boundedInt(process.env.REVIEW_CONTEXT_LIMIT_TOKENS, 1000000, 10000, 2000000),
+  deliveryTimeoutMs: boundedInt(process.env.DELIVERY_TIMEOUT_MS, 30000, 1000, 300000),
+  deliveryAllowPrivateUrls: /^(1|true|yes)$/i.test(String(process.env.DELIVERY_ALLOW_PRIVATE_URLS || "")),
   cleanupIntervalMs: 24 * 60 * 60 * 1000
 };
 

@@ -167,6 +167,12 @@ const NETDISK_PROVIDERS = {
 const WORK_DRAFT_KEY_PREFIX = "vtw-work-draft";
 const DURATION_SAMPLES_KEY = "vtw-duration-samples";
 const EXTRA_DOC_TEMPLATES_KEY = "vtw-extra-doc-templates";
+const DELIVERY_PRESETS = {
+  standard: "完整内容",
+  okf: "OKF 知识包",
+  chunks: "原文分片",
+  custom: "自定义 JSON"
+};
 
 function defaultProviderConfig() {
   return Object.fromEntries(
@@ -229,7 +235,9 @@ function defaultWorkDraft() {
       owner: "",
       version: "1.0",
       tags: ""
-    }
+    },
+    deliveryEnabled: false,
+    deliveryTargetId: ""
   };
 }
 
@@ -247,7 +255,9 @@ function normalizeWorkDraft(saved) {
       owner: typeof okfOptions.owner === "string" ? okfOptions.owner : defaults.okfOptions.owner,
       version: typeof okfOptions.version === "string" ? okfOptions.version : defaults.okfOptions.version,
       tags: Array.isArray(okfOptions.tags) ? okfOptions.tags.join(", ") : typeof okfOptions.tags === "string" ? okfOptions.tags : defaults.okfOptions.tags
-    }
+    },
+    deliveryEnabled: Boolean(saved?.deliveryEnabled),
+    deliveryTargetId: typeof saved?.deliveryTargetId === "string" ? saved.deliveryTargetId : ""
   };
 }
 
@@ -615,6 +625,213 @@ function NetdiskConfig({ ossState }) {
   );
 }
 
+function defaultDeliveryDraft() {
+  return {
+    id: "",
+    name: "知识库接口",
+    enabled: true,
+    method: "POST",
+    url: "",
+    headers: {},
+    authType: "none",
+    authHeaderName: "",
+    authSecret: "",
+    hasAuthSecret: false,
+    payloadPreset: "standard",
+    payloadTemplate: "{\n  \"title\": \"{{job.title}}\",\n  \"sourceUrl\": \"{{job.link}}\",\n  \"transcript\": \"{{rawText}}\",\n  \"documents\": {{json documents}},\n  \"okf\": {{json okf}},\n  \"metadata\": {{json metadata}}\n}"
+  };
+}
+
+function DeliveryConfig({ targets, setTargets, reloadTargets }) {
+  const [selectedId, setSelectedId] = useState("");
+  const [draft, setDraft] = useState(() => defaultDeliveryDraft());
+  const [headersText, setHeadersText] = useState("{}");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+
+  useEffect(() => {
+    const selected = targets.find((item) => item.id === selectedId);
+    const next = selected ? { ...defaultDeliveryDraft(), ...selected, authSecret: "" } : defaultDeliveryDraft();
+    setDraft(next);
+    setHeadersText(JSON.stringify(next.headers || {}, null, 2));
+  }, [selectedId, targets]);
+
+  function patchDraft(patch) {
+    setDraft((old) => ({ ...old, ...patch }));
+    setMessage("");
+    setError("");
+  }
+
+  function buildTargetPayload() {
+    let headers = {};
+    if (headersText.trim()) {
+      try {
+        const parsed = JSON.parse(headersText);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Headers 必须是 JSON 对象。");
+        headers = parsed;
+      } catch (err) {
+        throw new Error(err.message || "Headers JSON 无效。");
+      }
+    }
+    return {
+      ...draft,
+      headers,
+      authSecret: draft.authSecret || (draft.hasAuthSecret ? "configured" : "")
+    };
+  }
+
+  async function saveTarget() {
+    if (saving) return;
+    setSaving(true);
+    setMessage("");
+    setError("");
+    try {
+      const res = await apiFetch("/api/delivery/targets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: buildTargetPayload() })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.error || "保存接口失败。");
+      setTargets((old) => {
+        const rest = old.filter((item) => item.id !== data.target.id);
+        return [data.target, ...rest];
+      });
+      setSelectedId(data.target.id);
+      setMessage("保存成功。");
+    } catch (err) {
+      setError(err.message || "保存接口失败。");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function testTarget() {
+    if (!draft.id || testing) return;
+    setTesting(true);
+    setMessage("");
+    setError("");
+    try {
+      const res = await apiFetch(`/api/delivery/targets/${encodeURIComponent(draft.id)}/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: buildTargetPayload() })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.error || "接口测试失败。");
+      setMessage(`测试成功${data.httpStatus ? ` · HTTP ${data.httpStatus}` : ""}`);
+    } catch (err) {
+      setError(err.message || "接口测试失败。");
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  async function deleteTarget() {
+    if (!draft.id || !window.confirm("确定删除这个自定义接口吗？")) return;
+    setError("");
+    setMessage("");
+    const res = await apiFetch(`/api/delivery/targets/${encodeURIComponent(draft.id)}`, { method: "DELETE" });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setError(data.error || "删除接口失败。");
+      return;
+    }
+    setTargets((old) => old.filter((item) => item.id !== draft.id));
+    setSelectedId("");
+    reloadTargets?.();
+  }
+
+  return (
+    <section className="panel deliveryConfig">
+      <div className="panelHead compactHead">
+        <div>
+          <h2>自定义接口输出</h2>
+          <p>把任务生成的原文、额外文档或 OKF 结果推送到你自己的知识库、自动化流程或业务系统。</p>
+        </div>
+        <div className="panelActions">
+          <button className="btn" onClick={() => setSelectedId("")}><Plus size={15} />新建</button>
+          <button className="primary compactPrimary" disabled={saving} onClick={saveTarget}><Save size={15} />{saving ? "保存中" : "保存接口"}</button>
+        </div>
+      </div>
+
+      <div className="deliveryPicker">
+        <label className="field">接口
+          <select value={selectedId} onChange={(event) => setSelectedId(event.target.value)}>
+            <option value="">新建接口</option>
+            {targets.map((target) => (
+              <option key={target.id} value={target.id}>{target.name}</option>
+            ))}
+          </select>
+        </label>
+        <label className="checkLine inline">
+          <input type="checkbox" checked={draft.enabled} onChange={(event) => patchDraft({ enabled: event.target.checked })} />
+          <span>启用</span>
+        </label>
+      </div>
+
+      <div className="deliveryFields">
+        <label className="field">名称
+          <input value={draft.name} onChange={(event) => patchDraft({ name: event.target.value })} placeholder="例如：内部知识库" />
+        </label>
+        <label className="field">请求方式
+          <select value={draft.method} onChange={(event) => patchDraft({ method: event.target.value })}>
+            <option value="POST">POST</option>
+            <option value="PUT">PUT</option>
+            <option value="PATCH">PATCH</option>
+          </select>
+        </label>
+        <label className="field full">接口地址
+          <input value={draft.url} onChange={(event) => patchDraft({ url: event.target.value })} placeholder="https://example.com/api/import" />
+        </label>
+        <label className="field">鉴权方式
+          <select value={draft.authType} onChange={(event) => patchDraft({ authType: event.target.value })}>
+            <option value="none">无需鉴权</option>
+            <option value="bearer">Bearer Token</option>
+            <option value="header">自定义 Header</option>
+          </select>
+        </label>
+        {draft.authType === "header" && (
+          <label className="field">Header 名称
+            <input value={draft.authHeaderName} onChange={(event) => patchDraft({ authHeaderName: event.target.value })} placeholder="X-API-Key" />
+          </label>
+        )}
+        {draft.authType !== "none" && (
+          <label className="field">密钥
+            <input type="password" value={draft.authSecret} onChange={(event) => patchDraft({ authSecret: event.target.value })} placeholder={draft.hasAuthSecret ? "已保存，留空不修改" : "输入密钥"} />
+          </label>
+        )}
+        <label className="field">输出内容
+          <select value={draft.payloadPreset} onChange={(event) => patchDraft({ payloadPreset: event.target.value })}>
+            {Object.entries(DELIVERY_PRESETS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+        </label>
+        <label className="field full">额外 Headers（JSON）
+          <textarea value={headersText} onChange={(event) => setHeadersText(event.target.value)} placeholder="{ &quot;X-Workspace&quot;: &quot;demo&quot; }" />
+        </label>
+        {draft.payloadPreset === "custom" && (
+          <label className="field full">自定义 JSON 模板
+            <textarea className="deliveryTemplateArea" value={draft.payloadTemplate} onChange={(event) => patchDraft({ payloadTemplate: event.target.value })} />
+          </label>
+        )}
+      </div>
+
+      <div className="deliveryActions">
+        <div>
+          {message && <span className="testResult ok">{message}</span>}
+          {error && <span className="testResult err">{error}</span>}
+        </div>
+        <div className="panelActions">
+          {draft.id && <button className="btn dangerBtn" onClick={deleteTarget}><Trash2 size={15} />删除</button>}
+          <button className="btn" disabled={!draft.id || testing} onClick={testTarget}><RefreshCw size={15} />{testing ? "测试中" : "测试接口"}</button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function NetdiskLogin() {
   const [activeDrive, setActiveDrive] = useState("baidu");
   const [statusMap, setStatusMap] = useState({});
@@ -934,7 +1151,7 @@ function NetdiskLogin() {
   );
 }
 
-function ConfigPage({ providerState, ossState }) {
+function ConfigPage({ providerState, ossState, deliveryTargets, setDeliveryTargets, reloadDeliveryTargets }) {
   const [manualSavedAt, setManualSavedAt] = useState(null);
   const [saveMessage, setSaveMessage] = useState("");
   const [saveError, setSaveError] = useState("");
@@ -974,7 +1191,7 @@ function ConfigPage({ providerState, ossState }) {
       <section className="configTop panel">
         <div>
           <h1>模型配置</h1>
-          <p>配置转写、AI 处理、网盘授权和高级存储，保障 V2W 当前流程稳定运行。</p>
+          <p>配置转写、AI 处理、网盘授权、高级存储和可选接口输出，保障 V2W 当前流程稳定运行。</p>
         </div>
         <div className="saveGroup">
           {saveMessage ? <span>{saveMessage}</span> : latestSavedAt && <span>已保存 {formatSavedTime(latestSavedAt)}</span>}
@@ -984,6 +1201,7 @@ function ConfigPage({ providerState, ossState }) {
       </section>
       <ModelConfig providerState={providerState} />
       <NetdiskLogin />
+      <DeliveryConfig targets={deliveryTargets} setTargets={setDeliveryTargets} reloadTargets={reloadDeliveryTargets} />
       <NetdiskConfig ossState={ossState} />
     </>
   );
@@ -1415,6 +1633,12 @@ function OutputFormatPanel({ enabled, setEnabled, value, setValue }) {
 function friendlyJobError(job) {
   const detail = String(job.errorSummary || job.error || "").trim();
   if (job.status === "done") {
+    if (/接口输出失败|自定义接口输出失败/i.test(detail)) {
+      return { headline: "接口输出失败，可调整接口后点击「重试接口」。", detail };
+    }
+    if (/审查失败/i.test(detail)) {
+      return { headline: "文档审查失败，可点击「重试审查」。", detail };
+    }
     return { headline: "部分额外文件生成失败，可点击「重试失败部分」重新生成。", detail };
   }
   const rules = [
@@ -1471,6 +1695,24 @@ function reviewStatusText(job) {
   return "";
 }
 
+function deliveryStatusText(job) {
+  if (!job.deliveryEnabled) return "";
+  const delivery = job.delivery;
+  const status = delivery?.status || job.deliveryStatus;
+  if (status === "running") return "接口输出中";
+  if (status === "success") return "接口输出已完成";
+  if (status === "blocked") return "接口输出已跳过";
+  if (status === "error") return "接口输出失败";
+  return "等待接口输出";
+}
+
+function deliveryMetaText(delivery) {
+  const parts = [];
+  if (delivery?.httpStatus) parts.push(`HTTP ${delivery.httpStatus}`);
+  if (delivery?.attempts) parts.push(`${delivery.attempts} 次`);
+  return parts.length ? ` · ${parts.join(" · ")}` : "";
+}
+
 function ReviewResultModal({ job, onClose }) {
   const review = job?.review;
   const files = review?.result?.files || [];
@@ -1515,7 +1757,7 @@ function ReviewResultModal({ job, onClose }) {
   );
 }
 
-function JobList({ jobs, onDelete, onRetry, onRetryExtra, onRetryReview, queueState, onResume }) {
+function JobList({ jobs, onDelete, onRetry, onRetryExtra, onRetryReview, onRetryDelivery, queueState, onResume }) {
   const doneJobs = jobs.filter((job) => (job.outputFiles?.length || job.outputUrl) && !job.reviewLocked);
   const [downloadError, setDownloadError] = useState("");
   const [downloading, setDownloading] = useState(false);
@@ -1596,6 +1838,11 @@ function JobList({ jobs, onDelete, onRetry, onRetryExtra, onRetryReview, queueSt
           const usage = job.usageSummary;
           const phaseText = job.phaseIndex && job.phaseTotal ? `${job.phaseIndex}/${job.phaseTotal}` : "";
           const reviewText = job.reviewEnabled ? reviewStatusText(job) : "";
+          const deliveryText = deliveryStatusText(job);
+          const deliveryErrorText = job.delivery?.error || job.deliveryError || "";
+          const deliveryCanRetry = job.deliveryEnabled
+            && !job.reviewLocked
+            && ["error", "blocked"].includes(job.delivery?.status || job.deliveryStatus || "");
           const barValue = job.status === "done"
             ? 100
             : Math.max(0, Math.min(100, Math.round(Number(job.progress ?? 0))));
@@ -1621,6 +1868,12 @@ function JobList({ jobs, onDelete, onRetry, onRetryExtra, onRetryReview, queueSt
                       <ShieldCheck size={14} />{reviewText}
                     </span>
                   )}
+                  {deliveryText && (
+                    <span className={`deliveryStat ${job.delivery?.status || job.deliveryStatus || ""}`}>
+                      <LinkIcon size={14} />{deliveryText}
+                      {deliveryMetaText(job.delivery)}
+                    </span>
+                  )}
                 </div>
                 <div className="bar">
                   <div className="barTrack"><div className={`barFill ${barClass}`} style={{ width: `${barValue}%` }} /></div>
@@ -1630,6 +1883,7 @@ function JobList({ jobs, onDelete, onRetry, onRetryExtra, onRetryReview, queueSt
               <div className="jobFooter">
                 {job.error && <JobError job={job} />}
                 {job.reviewEnabled && job.review?.error && <div className="jobErrMsg">审查失败：{job.review.error}</div>}
+                {job.deliveryEnabled && deliveryErrorText && <div className="jobErrMsg">接口输出：{deliveryErrorText}</div>}
                 <div className="downloads">
                   {files.map((file) => (
                     <button
@@ -1647,6 +1901,9 @@ function JobList({ jobs, onDelete, onRetry, onRetryExtra, onRetryReview, queueSt
                   )}
                   {job.reviewEnabled && (job.review?.status === "error" || job.reviewStatus === "error") && (
                     <button className="chip retry" onClick={() => onRetryReview(job.id)}><RefreshCw size={15} />重试审查</button>
+                  )}
+                  {deliveryCanRetry && (
+                    <button className="chip retry" onClick={() => onRetryDelivery(job.id)}><RefreshCw size={15} />重试接口</button>
                   )}
                   {job.status === "error" && (
                     <button className="chip retry" onClick={() => onRetry(job.id)}><RefreshCw size={15} />重试</button>
@@ -1707,6 +1964,53 @@ function OkfPanel({ enabled, setEnabled, options, setOptions }) {
   );
 }
 
+function DeliveryOutputPanel({ targets, enabled, setEnabled, targetId, setTargetId, onGoConfig }) {
+  const enabledTargets = useMemo(() => targets.filter((item) => item.enabled), [targets]);
+  useEffect(() => {
+    if (!enabled) return;
+    if (targetId && enabledTargets.some((item) => item.id === targetId)) return;
+    setTargetId(enabledTargets[0]?.id || "");
+  }, [enabled, enabledTargets, targetId, setTargetId]);
+
+  return (
+    <div className="outputSetting deliveryPanel">
+      <div className="outputSettingHead formatHead">
+        <div>
+          <h2>接口输出</h2>
+          <p>任务完成后，把生成内容推送到指定系统。</p>
+        </div>
+        <label className="checkLine inline formatToggle">
+          <input
+            type="checkbox"
+            checked={enabled}
+            disabled={!enabledTargets.length}
+            onChange={(event) => setEnabled(event.target.checked)}
+          />
+          <span>启用</span>
+        </label>
+      </div>
+      {!enabledTargets.length ? (
+        <div className="outputHint deliveryEmpty">
+          先在模型配置里添加并启用接口目标。
+          <button className="linkBtn" onClick={onGoConfig}>去配置</button>
+        </div>
+      ) : enabled && (
+        <div className="deliveryOutputBody">
+          <label className="field">输出目标
+            <select value={targetId} onChange={(event) => setTargetId(event.target.value)}>
+              {enabledTargets.map((target) => (
+                <option key={target.id} value={target.id}>
+                  {target.name} · {DELIVERY_PRESETS[target.payloadPreset] || "完整内容"}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function OutputSettings({
   docs,
   setDocs,
@@ -1718,6 +2022,12 @@ function OutputSettings({
   setOkfEnabled,
   okfOptions,
   setOkfOptions,
+  deliveryTargets,
+  deliveryEnabled,
+  setDeliveryEnabled,
+  deliveryTargetId,
+  setDeliveryTargetId,
+  onGoConfig,
   canStart,
   submitState,
   onSubmit,
@@ -1726,6 +2036,7 @@ function OutputSettings({
   const outputSummary = [
     "Word 文档默认生成",
     okfEnabled ? "OKF ZIP" : "",
+    deliveryEnabled ? "接口输出" : "",
     docs.length ? `${docs.length} 个额外文件` : "",
     formatEnabled ? "已填写格式要求" : ""
   ].filter(Boolean).join(" · ");
@@ -1759,6 +2070,14 @@ function OutputSettings({
           setEnabled={setOkfEnabled}
           options={okfOptions}
           setOptions={setOkfOptions}
+        />
+        <DeliveryOutputPanel
+          targets={deliveryTargets}
+          enabled={deliveryEnabled}
+          setEnabled={setDeliveryEnabled}
+          targetId={deliveryTargetId}
+          setTargetId={setDeliveryTargetId}
+          onGoConfig={onGoConfig}
         />
         <ExtraDocs docs={docs} setDocs={setDocs} embedded />
       </div>
@@ -1815,32 +2134,7 @@ function NetdiskStatusBar({ onGoConfig }) {
   );
 }
 
-function RoadmapNotice() {
-  const items = [
-    { icon: <Mic size={15} />, text: "V2W 后续以性能优化、稳定性提升和 BUG 修复为主" },
-    { icon: <Layers size={15} />, text: "V2K 支持将 Word、视频、音频和结构化知识统一整理为 OKF" },
-    { icon: <Folder size={15} />, text: "V2K 将提供线上知识存储、统一管理和基础问答能力" }
-  ];
-  return (
-    <details className="roadmapNotice" aria-label="后续更新预告">
-      <summary className="roadmapNoticeHead">
-        <span>后续更新预告</span>
-        <strong>V2W 进入维护期，新能力将在 V2K 更新</strong>
-        <p>V2W 后续不再继续堆叠新功能，主要保障现有转写、Word 和 OKF 流程更快、更稳；新的知识管理能力会迁移到 V2K 平台。</p>
-      </summary>
-      <div className="roadmapNoticeItems">
-        {items.map((item) => (
-          <span key={item.text}>
-            {item.icon}
-            {item.text}
-          </span>
-        ))}
-      </div>
-    </details>
-  );
-}
-
-function WorkPage({ mode, providerState, oss, jobs, setJobs, queueState, onDelete, onRetry, onRetryExtra, onRetryReview, onResume, onGoConfig }) {
+function WorkPage({ mode, providerState, oss, jobs, setJobs, queueState, onDelete, onRetry, onRetryExtra, onRetryReview, onRetryDelivery, onResume, onGoConfig, deliveryTargets }) {
   const draftKey = `${WORK_DRAFT_KEY_PREFIX}-${mode}`;
   const initialDraft = useMemo(() => normalizeWorkDraft(readJson(draftKey, null)), [draftKey]);
   const [links, setLinks] = useState(initialDraft.links);
@@ -1850,6 +2144,8 @@ function WorkPage({ mode, providerState, oss, jobs, setJobs, queueState, onDelet
   const [formatRequirement, setFormatRequirement] = useState(initialDraft.formatRequirement);
   const [okfEnabled, setOkfEnabled] = useState(initialDraft.okfEnabled);
   const [okfOptions, setOkfOptions] = useState(initialDraft.okfOptions);
+  const [deliveryEnabled, setDeliveryEnabled] = useState(initialDraft.deliveryEnabled);
+  const [deliveryTargetId, setDeliveryTargetId] = useState(initialDraft.deliveryTargetId);
   const [submitState, setSubmitState] = useState({ loading: false, message: "", error: "" });
   const jobSectionRef = useRef(null);
   const isCloud = mode === "cloud";
@@ -1857,15 +2153,15 @@ function WorkPage({ mode, providerState, oss, jobs, setJobs, queueState, onDelet
   const canStart = linkCount > 0;
 
   useEffect(() => {
-    localStorage.setItem(draftKey, JSON.stringify({ links, bulkText, docs, formatEnabled, formatRequirement, okfEnabled, okfOptions }));
-  }, [draftKey, links, bulkText, docs, formatEnabled, formatRequirement, okfEnabled, okfOptions]);
+    localStorage.setItem(draftKey, JSON.stringify({ links, bulkText, docs, formatEnabled, formatRequirement, okfEnabled, okfOptions, deliveryEnabled, deliveryTargetId }));
+  }, [draftKey, links, bulkText, docs, formatEnabled, formatRequirement, okfEnabled, okfOptions, deliveryEnabled, deliveryTargetId]);
 
   useEffect(() => {
     setSubmitState((state) => {
       if (state.loading || (!state.error && !state.message)) return state;
       return { loading: false, message: "", error: "" };
     });
-  }, [links, bulkText, docs, formatEnabled, formatRequirement, okfEnabled, okfOptions, mode]);
+  }, [links, bulkText, docs, formatEnabled, formatRequirement, okfEnabled, okfOptions, deliveryEnabled, deliveryTargetId, mode]);
 
   async function submit() {
     const normalizedLinks = links
@@ -1891,6 +2187,8 @@ function WorkPage({ mode, providerState, oss, jobs, setJobs, queueState, onDelet
           formatRequirement: formatEnabled ? formatRequirement : "",
           okfEnabled,
           okfOptions,
+          deliveryEnabled: deliveryEnabled && Boolean(deliveryTargetId),
+          deliveryTargetId,
           concurrency: 5,
           settings: buildJobRuntimeSettings(!isCloud)
         })
@@ -1950,15 +2248,20 @@ function WorkPage({ mode, providerState, oss, jobs, setJobs, queueState, onDelet
         setOkfEnabled={setOkfEnabled}
         okfOptions={okfOptions}
         setOkfOptions={setOkfOptions}
+        deliveryTargets={deliveryTargets}
+        deliveryEnabled={deliveryEnabled}
+        setDeliveryEnabled={setDeliveryEnabled}
+        deliveryTargetId={deliveryTargetId}
+        setDeliveryTargetId={setDeliveryTargetId}
+        onGoConfig={onGoConfig}
         canStart={canStart}
         submitState={submitState}
         onSubmit={submit}
         linkCount={linkCount}
       />
       <div ref={jobSectionRef}>
-        <JobList jobs={jobs} onDelete={onDelete} onRetry={onRetry} onRetryExtra={onRetryExtra} onRetryReview={onRetryReview} queueState={queueState} onResume={onResume} />
+        <JobList jobs={jobs} onDelete={onDelete} onRetry={onRetry} onRetryExtra={onRetryExtra} onRetryReview={onRetryReview} onRetryDelivery={onRetryDelivery} queueState={queueState} onResume={onResume} />
       </div>
-      <RoadmapNotice />
     </>
   );
 }
@@ -1967,6 +2270,7 @@ function UsagePage({ user }) {
   const [range, setRange] = useState("month");
   const [summary, setSummary] = useState(null);
   const [records, setRecords] = useState([]);
+  const [diagnostics, setDiagnostics] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -2228,6 +2532,44 @@ function AdminUsagePanel({ summary, records }) {
   );
 }
 
+function AdminDiagnosticsPanel({ diagnostics }) {
+  const stageRows = diagnostics?.byStage || [];
+  const failureRows = diagnostics?.recentFailures || [];
+  return (
+    <>
+      <div className="usageTable adminDiagnosticsTable">
+        <div className="usageTableHead">
+          <span>阶段</span><span>状态</span><span>记录数</span><span>平均耗时</span>
+        </div>
+        {stageRows.length === 0 && <div className="usageEmpty">暂无任务诊断数据。</div>}
+        {stageRows.map((row, index) => (
+          <div className="usageTableRow" key={`${row.stage}-${row.status}-${index}`}>
+            <span>{row.stage}</span>
+            <span>{row.status}</span>
+            <span>{formatNumber(row.records)}</span>
+            <span>{row.avgDurationMs ? `${(row.avgDurationMs / 1000).toFixed(1)} 秒` : "-"}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="usageTable adminDiagnosticsFailures">
+        <div className="usageTableHead">
+          <span>时间</span><span>任务</span><span>阶段</span><span>错误</span>
+        </div>
+        {failureRows.length === 0 && <div className="usageEmpty">暂无失败摘要。</div>}
+        {failureRows.map((row, index) => (
+          <div className="usageTableRow" key={`${row.jobId}-${row.createdAt}-${index}`}>
+            <span>{row.createdAt ? new Date(row.createdAt).toLocaleString("zh-CN", { hour12: false }) : "-"}</span>
+            <span>{row.jobTitle || row.jobId || "-"}</span>
+            <span>{row.stage || "-"}</span>
+            <span title={row.error || row.message}>{row.error || row.message || "-"}</span>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
 function AdminReviewRulesPanel({
   reviewRuleName,
   setReviewRuleName,
@@ -2355,6 +2697,9 @@ function AdminPanelContent(props) {
   if (props.section === "usage") {
     return <AdminUsagePanel summary={props.summary} records={props.records} />;
   }
+  if (props.section === "diagnostics") {
+    return <AdminDiagnosticsPanel diagnostics={props.diagnostics} />;
+  }
   if (props.section === "reviewRules") {
     return (
       <AdminReviewRulesPanel
@@ -2417,10 +2762,11 @@ function AdminPage() {
     setLoading(true);
     setError("");
     try {
-      const [usersRes, summaryRes, recordsRes, packsRes, reviewConfigRes, reviewsRes] = await Promise.all([
+      const [usersRes, summaryRes, recordsRes, diagnosticsRes, packsRes, reviewConfigRes, reviewsRes] = await Promise.all([
         apiFetch(`/api/admin/users?range=${activeRange}`),
         apiFetch(`/api/admin/usage/summary?range=${activeRange}`),
         apiFetch(`/api/admin/usage/records?range=${activeRange}&page=1&pageSize=100`),
+        apiFetch(`/api/admin/diagnostics/summary?range=${activeRange}`),
         apiFetch("/api/admin/review/rule-packs"),
         apiFetch("/api/admin/review/config"),
         apiFetch("/api/admin/reviews?locked=true")
@@ -2428,18 +2774,21 @@ function AdminPage() {
       const usersData = await usersRes.json();
       const summaryData = await summaryRes.json();
       const recordsData = await recordsRes.json();
+      const diagnosticsData = await diagnosticsRes.json();
       const packsData = await packsRes.json();
       const reviewConfigData = await reviewConfigRes.json();
       const reviewsData = await reviewsRes.json();
       if (!usersRes.ok) throw new Error(usersData.error || "账号列表读取失败");
       if (!summaryRes.ok) throw new Error(summaryData.error || "用量汇总读取失败");
       if (!recordsRes.ok) throw new Error(recordsData.error || "用量明细读取失败");
+      if (!diagnosticsRes.ok) throw new Error(diagnosticsData.error || "任务诊断读取失败");
       if (!packsRes.ok) throw new Error(packsData.error || "审查规则读取失败");
       if (!reviewConfigRes.ok) throw new Error(reviewConfigData.error || "审查配置读取失败");
       if (!reviewsRes.ok) throw new Error(reviewsData.error || "审查记录读取失败");
       setUsers(usersData.users || []);
       setSummary(summaryData.summary);
       setRecords(recordsData.records || []);
+      setDiagnostics(diagnosticsData.diagnostics || null);
       setReviewRulePacks(packsData.rulePacks || []);
       setReviewConfig((old) => ({ ...old, ...(reviewConfigData.config || {}) }));
       setReviewRuns(reviewsData.reviews || []);
@@ -2598,6 +2947,7 @@ function AdminPage() {
           <div className="usageRange">
             <button className={section === "users" ? "active" : ""} onClick={() => setSection("users")}><Users size={15} />账号管理</button>
             <button className={section === "usage" ? "active" : ""} onClick={() => setSection("usage")}><BarChart3 size={15} />用量查看</button>
+            <button className={section === "diagnostics" ? "active" : ""} onClick={() => setSection("diagnostics")}><BarChart3 size={15} />任务诊断</button>
             <button className={section === "reviewRules" ? "active" : ""} onClick={() => setSection("reviewRules")}><FileText size={15} />审查规则</button>
             <button className={section === "reviewConfig" ? "active" : ""} onClick={() => setSection("reviewConfig")}><ShieldCheck size={15} />审查配置</button>
             <button className={section === "reviewManage" ? "active" : ""} onClick={() => setSection("reviewManage")}><AlertTriangle size={15} />审查管理</button>
@@ -2622,6 +2972,7 @@ function AdminPage() {
           onToggleReviewEntitlement={toggleReviewEntitlement}
           summary={summary}
           records={records}
+          diagnostics={diagnostics}
           reviewRuleName={reviewRuleName}
           setReviewRuleName={setReviewRuleName}
           reviewRuleVersion={reviewRuleVersion}
@@ -2788,6 +3139,7 @@ function App({ user, onLogout }) {
   const [tab, setTab] = useState("direct");
   const [jobs, setJobs] = useState([]);
   const [queueState, setQueueState] = useState({ paused: false, reason: "", queued: 0, running: 0 });
+  const [deliveryTargets, setDeliveryTargets] = useState([]);
   const providerState = useProviderConfig();
   const ossState = useOssConfig();
   const currentJobs = useMemo(() => jobs, [jobs]);
@@ -2800,18 +3152,32 @@ function App({ user, onLogout }) {
 
   useEffect(() => {
     let cancelled = false;
-    apiFetch("/api/config")
-      .then(async (res) => {
+    Promise.all([
+      apiFetch("/api/config"),
+      apiFetch("/api/delivery/targets")
+    ])
+      .then(async ([configRes, deliveryRes]) => {
+        const res = configRes;
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || "读取配置失败");
-        if (cancelled || !data.config) return;
-        providerState.replace(data.config.provider || {});
-        ossState.replace(data.config.oss || {});
+        const deliveryData = await deliveryRes.json().catch(() => ({}));
+        if (cancelled) return;
+        if (data.config) {
+          providerState.replace(data.config.provider || {});
+          ossState.replace(data.config.oss || {});
+        }
+        if (Array.isArray(deliveryData.targets)) setDeliveryTargets(deliveryData.targets);
       })
       .catch(() => {
         // Keep the editable draft visible; submitting tasks still requires server-side config.
       });
     return () => { cancelled = true; };
+  }, []);
+
+  const reloadDeliveryTargets = useCallback(async () => {
+    const res = await apiFetch("/api/delivery/targets");
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && Array.isArray(data.targets)) setDeliveryTargets(data.targets);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -2901,6 +3267,14 @@ function App({ user, onLogout }) {
     refresh();
   }
 
+  async function retryDelivery(id) {
+    const res = await apiFetch(`/api/jobs/${id}/delivery/retry`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (data.job) setJobs((old) => old.map((job) => job.id === id ? data.job : job));
+    if (!res.ok) return;
+    refresh();
+  }
+
   return (
     <>
       <div className="bg" />
@@ -2929,7 +3303,13 @@ function App({ user, onLogout }) {
           </nav>
         </div>
         {tab === "model" ? (
-          <ConfigPage providerState={providerState} ossState={ossState} />
+          <ConfigPage
+            providerState={providerState}
+            ossState={ossState}
+            deliveryTargets={deliveryTargets}
+            setDeliveryTargets={setDeliveryTargets}
+            reloadDeliveryTargets={reloadDeliveryTargets}
+          />
         ) : tab === "profile" ? (
           <UsagePage user={user} />
         ) : tab === "admin" && user?.isAdmin ? (
@@ -2947,8 +3327,10 @@ function App({ user, onLogout }) {
             onRetry={retryJob}
             onRetryExtra={retryExtra}
             onRetryReview={retryReview}
+            onRetryDelivery={retryDelivery}
             onResume={resumeQueue}
             onGoConfig={() => setTab("model")}
+            deliveryTargets={deliveryTargets}
           />
         )}
       </main>
